@@ -1,0 +1,5 @@
+pandas>=2.0
+yfinance>=0.2.40
+alpaca-py>=0.34
+python-dotenv>=1.0
+flask>=3.0
