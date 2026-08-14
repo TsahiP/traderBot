@@ -1,8 +1,9 @@
 # TradeBot — Handoff / Operations Guide
 
-SMA-crossover trading bot with a local Next.js dashboard. Trades **SPY** on an
-Alpaca **paper** account (never real money), backtests any ticker on demand,
-and shows everything on a web desk at `http://localhost:3000`.
+Multi-strategy trading bot with a local Next.js dashboard. Trades **SPY** on an
+Alpaca **paper** account (never real money), backtests any ticker on demand
+(daily or intraday, long or short), and shows everything on a web desk at
+`http://localhost:3000`.
 
 ---
 
@@ -11,13 +12,13 @@ and shows everything on a web desk at `http://localhost:3000`.
 | Layer | Tech | Notes |
 |---|---|---|
 | Backend API | Python 3.12 · Flask | `dashboard.py`, port `8000`, API-only |
-| Strategy/engine | pandas | `strategy.py` + `engine.py` — single source of truth |
+| Strategy/engine | pandas | `strategies.py` (registry) + `engine.py` — single source of truth |
 | Live trading | alpaca-py (paper) | `livebot.py` |
 | Historical data | yfinance | backtests, on-demand downloads |
 | Frontend | Next.js 16 (App Router) · TypeScript · Tailwind v4 | `web/`, port `3000` |
 | UI kit | shadcn/ui (nova preset, Base UI) | components in `web/src/components/ui/` |
 | Data layer | SWR (custom hooks) · zod (validation) | schemas in `web/src/lib/schemas.ts` |
-| Charts | lightweight-charts (TradingView) v5 | candles + SMA + buy/sell markers, equity area |
+| Charts | lightweight-charts (TradingView) v5 | candles + overlays + buy/sell/EOD markers, equity area |
 
 ## 2. Architecture
 
@@ -30,14 +31,16 @@ and shows everything on a web desk at `http://localhost:3000`.
                   ┌──────────────────────┐
                   │  Flask API :8000     │  dashboard.py
                   │  ┌────────────────┐  │
-                  │  │ engine.py      │  │  backtest simulation
-                  │  │ strategy.py    │  │  SMA crossover signals
+                  │  │ strategies.py  │  │  4-strategy registry (signals)
+                  │  │ engine.py      │  │  simulation: shorts, EOD, costs
+                  │  │ strategy.py    │  │  SMA signals (livebot + SMA strat)
                   │  └────────────────┘  │
                   └──────┬───────┬───────┘
                          │       │
               livebot.py │       │ yfinance (on-demand)
-              (Alpaca     │       │
-               paper)     │       ▼
+              (Alpaca     │       │  daily: BACKTEST_START→now
+               paper)     │       │  intraday: period-capped (7d/60d/730d)
+                         │       ▼
                          ▼    output/data_*.csv (CLI only)
                   output/live_trades.csv
 ```
@@ -68,8 +71,9 @@ gitignored). Without them the dashboard still works on backtest data.
 ```
 tradebot/
 ├── config.py          # all knobs: SYMBOL, SMA_FAST/SLOW, QUANTITY, CAPITAL, POLL_INTERVAL_MIN
-├── strategy.py        # compute_signals(df, fast, slow) -> signal col; latest_signal()
-├── engine.py          # run_backtest(), compute_metrics() — shared by CLI + API
+├── strategy.py        # SMA signals: compute_signals(df, fast, slow) -> signal col; latest_signal()
+├── strategies.py      # STRATEGIES registry: sma_crossover, vwap_reversion, opening_range_breakout, rsi_mean_reversion
+├── engine.py          # run_backtest() (shorts, EOD, costs), compute_metrics() — shared by CLI + API
 ├── backtest.py        # CLI: downloads data, runs engine, writes output/*.csv, prints report
 ├── livebot.py         # paper bot loop: market clock, daily bars, market orders, logs trades
 ├── dashboard.py       # Flask API (see §7 for endpoints)
@@ -86,17 +90,23 @@ tradebot/
         │   ├── charts/       # chart-theme.ts, equity-chart.tsx, lab-chart.tsx
         │   ├── ui/           # shadcn components (nova)
         │   └── *.tsx         # ticker-tape, stat-cards, trade-ledger, lab-form, lab-results, metrics-strip
-        ├── hooks/            # use-api.ts (useLive/Stats/Trades/Equity), use-backtest-run.ts
+        ├── hooks/            # use-api.ts (useLive/Stats/Trades/Equity/Strategies), use-backtest-run.ts
         └── lib/              # api.ts (typed fetcher), schemas.ts (zod), format.ts (Intl), utils.ts
 ```
 
 ## 5. Strategy & execution model
 
-- Signal: fast SMA crosses **above** slow SMA → buy (+1); crosses below → sell (−1); else 0.
+- **Strategies** (all in `strategies.py`, driven by the `STRATEGIES` registry):
+  - `sma_crossover` — fast SMA crosses above slow → buy (+1), below → sell (−1). Any timeframe.
+  - `vwap_reversion` — session-anchored VWAP; long when close deviates ≥ `deviation_pct` below it, exit when it recovers to within `exit_pct`; short the mirror. Intraday only.
+  - `opening_range_breakout` — range of the first `range_minutes`; buy a close above range high, sell below range low; target `tp_mult`× range, stop `sl_mult`× range; sessions wider than `max_range_pct` of the open are skipped. Intraday only.
+  - `rsi_mean_reversion` — long when RSI < oversold, exit when it crosses `exit_level`; short above overbought. Any timeframe.
+- Signals are **event-based** (+1/−1/0 per bar); the engine gates positions.
 - Orders execute at the **next bar's open** (no lookahead).
-- Fixed quantity per trade (`QUANTITY`); position gate prevents double orders.
-- Live bot acts on the **last completed daily bar** (drops the in-progress
-  bar while the market is open), market orders, `TimeInForce.DAY`.
+- Fixed quantity per trade (`qty`); optional **shorts** (`allow_short`): −1 opens a short, +1 covers; shorts need buying power at entry.
+- **Costs:** `cost_per_share` is charged on every fill (commission + slippage, both sides per round trip); tracked per trade and summed in `metrics.costs_total`. Intraday backtests are meaningless without it.
+- **Flat EOD:** strategies with `flat_eod` + any intraday timeframe force-close open positions at the last bar of each session (marked **EOD** on the chart, amber). Daily runs never flatten.
+- Live bot still runs the SMA crossover on the **last completed daily bar**, market orders, `TimeInForce.DAY`.
 - **Gotcha (fixed):** `signal` must stay boolean-typed — a `shift()`ed bool
   Series becomes `object` dtype and `~` yields truthy `-1`. Keep the
   `.fillna(False).astype(bool)` pattern in `strategy.py`.
@@ -105,8 +115,8 @@ tradebot/
 
 | File | Writer | Contents |
 |---|---|---|
-| `output/equity_curve.csv` | `backtest.py` | OHLCV, smas, signal, order, shares, cash, equity (tz-aware index) |
-| `output/trades.csv` | `backtest.py` | closed round trips: entry/exit date+price, pnl |
+| `output/equity_curve.csv` | `backtest.py` | OHLCV, smas, signal, order, exec, eod_exit, shares, cash, equity (tz-aware index) |
+| `output/trades.csv` | `backtest.py` | closed round trips: entry/exit date+price, side, exit_type, pnl, costs |
 | `output/data_<SYM>.csv` | `backtest.py` | raw OHLCV bars used by the run |
 | `output/live_trades.csv` | `livebot.py` | paper round trips appended live (dashboard "LIVE" rows) |
 | `logs/bot.log` | `livebot.py` | every signal/order/fill |
@@ -123,24 +133,39 @@ if you regenerate the file differently.
 | `GET /api/stats` | — | `{realized: {trades, total_pnl, wins, win_rate?}, backtest: {...metrics}\|null}` |
 | `GET /api/trades` | — | `{trades: [{entry_date, entry_price, exit_date, exit_price, qty, pnl, source: "live"\|"backtest"}]}` newest first |
 | `GET /api/equity` | — | `{dates[], equity[]}` downsampled |
-| `GET /api/backtest/run` | `symbol` (def SPY) `fast` `slow` `qty` `capital` | `{meta, metrics, series{OHLCV+smas+equity ≤800 bars}, markers[{index, date, side, price}], trades[]}` |
+| `GET /api/strategies` | — | registry `[{id, label, description, timeframes[], flat_eod, default_allow_short, default_timeframe, params[{key,label,min,max,step,default,int?,unit?}]}]` — drives the lab form |
+| `GET /api/backtest/run` | `symbol` (def SPY) `strategy` (def sma_crossover) `timeframe` (def 1d) `start` `end` (optional `YYYY-MM-DD`, inclusive; intraday requests clamped to the data window) `qty` `capital` `allow_short` (`true`/`false`) `cost_per_share` + per-strategy params (`fast`,`slow`,`deviation_pct`,`exit_pct`,`range_minutes`,`tp_mult`,`sl_mult`,`max_range_pct`,`rsi_period`,`oversold`,`overbought`,`exit_level`) | `{meta, metrics{...costs_total}, series{OHLCV+smas+equity ≤800 bars}, markers[{index, date, side: buy\|sell, eod?, price}], trades[{..., side, exit_type: signal\|eod, costs}]}` |
 
-Errors: `400` invalid params (fast ≥ slow, bad symbol chars), `404` unknown
-ticker ("No data for 'X'"), `500` engine failure. Body always
+Data windows per timeframe: `1d` → `BACKTEST_START` (2009); `1m` → 7 days;
+`5m`/`15m`/`30m` → 60 days; `1h` → 730 days (yfinance caps). Intraday
+requests with a `start` older than the cap are clamped to the window
+(default no-range intraday run = full window, ~60 *trading* days). Daily
+`end` is inclusive (backend adds one day for yfinance's exclusive end).
+
+Errors: `400` invalid params (unknown strategy, bad timeframe for the
+strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
+`404` unknown ticker ("No data for 'X'"), `500` engine failure. Body always
 `{"error": "..."}`. Frontend validates responses with zod on every fetch.
 
 ## 8. Frontend notes
 
 - **Hooks:** `useLive` (no polling), `useStats/useTrades/useEquity` (30 s
-  polling), `useBacktestRun` (conditional SWR key, `keepPreviousData` while
-  re-running; `run(LabValues)`).
-- **Validation:** `LabSchema` (zod) — symbol chars/len, fast<slow, qty/capital
-  ranges; coerce numbers; RHF typed as `useForm<z.input<Schema>, unknown, z.infer<Schema>>`.
+  polling), `useStrategies` (registry, fetched once), `useBacktestRun`
+  (conditional SWR key incl. strategy/timeframe/costs params,
+  `keepPreviousData` while re-running; `run(LabValues)`).
+- **Validation:** `LabSchema` (zod) — `z.discriminatedUnion("strategy", [...])`
+  with a `superRefine` for cross-field rules (fast<slow, exit<deviation,
+  oversold<exit<overbought); coerce numbers; RHF typed as
+  `useForm<z.input<Schema>, unknown, z.infer<Schema>>`. Form fields render
+  dynamically from the `/api/strategies` param specs; switching strategy
+  resets params/allow_short/timeframe via `STRATEGY_DEFAULTS`.
 - **Charts:** `lightweight-charts` v5 — `chart.addSeries(CandlestickSeries,
-  ...)`, `createSeriesMarkers()`, `autoSize: true`. Theme lives in
+  ...)`, `createSeriesMarkers()` (BUY/SELL arrows; EOD markers amber),
+  `autoSize: true`. Intraday dates arrive as `"YYYY-MM-DD HH:MM"` (NY time),
+  daily as `"YYYY-MM-DD"` — `toTime()` handles both. Theme lives in
   `chart-theme.ts` (must match CSS tokens in `globals.css`).
 - **Theme:** dark terminal look — tokens in `globals.css` (`:root` light,
-  `.dark`); add `--up`/`--down`/`--tape` there if you extend colors.
+  `.dark`); `--up`/`--down`/`--tape`/`--amber` there if you extend colors.
   Signature element: sticky ticker tape with live pulse dot + close flash.
 - **Conventions:** shadcn rules — `gap-*` not `space-y-*`, `data-icon`
   on button icons, `FieldGroup`/`Field`/`FieldError` for forms,
@@ -148,10 +173,15 @@ ticker ("No data for 'X'"), `500` engine failure. Body always
 
 ## 9. Known limitations & gotchas
 
-- No commission/slippage modeling; fixed-qty sizing means the backtest only
-  deploys `QUANTITY × price` of capital (SPY @10 → ~$5k of $100k) — raise
-  `QUANTITY` to size up.
-- Backtests use `BACKTEST_START` (2009); the live bot only warms up ~300 bars.
+- Intraday edges mostly die under realistic costs — that's the point of the
+  `cost_per_share` field; always run intraday with it on.
+- yfinance caps intraday history (7 d for 1m, ~60 trading days for 5m/15m/30m,
+  730 d for 1h) and is unofficial — it can throttle (429) or change shape.
+  Use `period=` for intraday, never `start=` (start can fall just outside
+  Yahoo's rolling window).
+- Fixed-qty sizing means the backtest only deploys `qty × price` of capital
+  (SPY @10 → ~$5k of $100k) — raise `qty` to size up.
+- Backtests use `BACKTEST_START` (2009) daily; the live bot only warms up ~300 bars.
 - Windows Defender can transiently lock `output/*.csv` during writes —
   retry; don't open CSVs in Excel while backtesting.
 - Paper orders assume instant fills; `livebot.py` reads `filled_avg_price`
@@ -163,12 +193,13 @@ ticker ("No data for 'X'"), `500` engine failure. Body always
 
 ## 10. Extending
 
-- **New strategy:** rewrite `strategy.py` — CLI, API, livebot and dashboard
-  all pick it up automatically (keep the signal contract: +1/−1/0).
+- **New strategy:** add a signal function + an entry in `STRATEGIES`
+  (`strategies.py`); the API, `/api/strategies`, form fields and zod union
+  (`web/src/lib/schemas.ts`) need the matching id/params/defaults.
 - **ML advisor:** `strategy.py` can call LM Studio
   (`http://127.0.0.1:1234/v1/chat/completions`, OpenAI-compatible) to
   influence signals — same endpoint the user already runs for Qwen locally.
-- **Risk controls:** stop-loss / max-position / slippage — add in
+- **Risk controls:** stop-loss / max-position / position sizing — add in
   `engine.run_backtest()` (backtest) and the `livebot.py` loop (live).
 - **More tickers in the live bot:** `config.SYMBOL` today; looping a list
   means tracking per-symbol open trades in `livebot.py`.
@@ -180,15 +211,21 @@ ticker ("No data for 'X'"), `500` engine failure. Body always
 | UI shows "API unreachable" | `dashboard.py` not running — start it first |
 | Tape says "missing .env keys" | copy `.env.example` → `.env`, add paper keys |
 | Lab returns 404 | ticker typo / delisted — try another symbol |
-| Lab returns 400 | fast ≥ slow, or out-of-range qty/capital |
+| Lab returns 400 | invalid params for the chosen strategy (fast ≥ slow, out-of-range, wrong timeframe, bad cross-field combos) |
+| Lab returns 500 | engine failure — check `dashboard.py` console; usually a data quirk (zero-volume bar) |
 | Ledger empty | no backtest run yet (run `backtest.py`) and no closed paper trades |
 | `next build` fails on unknown utility | check `globals.css` for stale arbitrary classes |
 | Ports busy | 3000/8000 in use — kill with `Stop-Process` or change port in `dashboard.py` / `npm run dev -- -p 3001` |
 
 ## 12. Current state (last verified)
 
-- Backtest SPY SMA 10/50 qty 10: **+4.07%** (2009→2026-08), 56 trades,
+- Backtest SPY SMA 10/50 qty 10, daily: **+4.08%** (2009→2026-08), 56 trades,
   57.1% win rate, −0.64% max DD; buy & hold +1046%.
-- Full stack smoke-tested: page 200, `/api/live`, `/api/stats`,
-  `/api/backtest/run` (SPY, AAPL) 200 via the Next proxy.
-- `npm run lint` clean, `npm run build` green.
+- All 4 strategies verified via the API: SMA (1d/1m), VWAP reversion (5m),
+  ORB (5m), RSI reversion (15m) on SPY/AAPL — markers match fills (no phantom
+  signals), EOD flattens marked, costs tracked per trade.
+- Error paths verified: unknown strategy → 400, wrong timeframe → 400,
+  fast ≥ slow / exit ≥ deviation / RSI ordering → 400.
+- Full stack smoke-tested: page 200, `/api/strategies`, `/api/live`,
+  `/api/backtest/run` 200 via the Next proxy.
+- `npm run lint` (1 benign React-Compiler/RHF `watch` warning), `npm run build` green.

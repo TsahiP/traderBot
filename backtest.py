@@ -25,7 +25,11 @@ def download_data() -> pd.DataFrame:
 def main() -> None:
     df = download_data()
     curve, trades = run_backtest(
-        df, config.SMA_FAST, config.SMA_SLOW, config.QUANTITY, config.CAPITAL
+        df,
+        strategy="sma_crossover",
+        params={"fast": config.SMA_FAST, "slow": config.SMA_SLOW},
+        qty=config.QUANTITY,
+        capital=config.CAPITAL,
     )
 
     trades.to_csv(config.OUTPUT_DIR / "trades.csv", index=False)
