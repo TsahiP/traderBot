@@ -173,6 +173,12 @@ export type StrategySpec = z.infer<typeof StrategySpec>;
 export const StrategiesResponse = z.array(StrategySpec);
 export type StrategiesResponse = z.infer<typeof StrategiesResponse>;
 
+export const AnalysisResponse = z.object({
+  model: z.string(),
+  analysis: z.string(),
+});
+export type AnalysisResponse = z.infer<typeof AnalysisResponse>;
+
 export const ApiError = z.object({ error: z.string() });
 export type ApiError = z.infer<typeof ApiError>;
 

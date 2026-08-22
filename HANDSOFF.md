@@ -15,6 +15,7 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
 | Strategy/engine | pandas | `strategies.py` (registry) + `engine.py` — single source of truth |
 | Live trading | alpaca-py (paper) | `livebot.py` |
 | Historical data | yfinance | backtests, on-demand downloads |
+| Local LLM advisor | LM Studio (OpenAI-compatible) | `/api/analyze` re-runs a backtest and has the local model critique it |
 | Frontend | Next.js 16 (App Router) · TypeScript · Tailwind v4 | `web/`, port `3000` |
 | UI kit | shadcn/ui (nova preset, Base UI) | components in `web/src/components/ui/` |
 | Data layer | SWR (custom hooks) · zod (validation) | schemas in `web/src/lib/schemas.ts` |
@@ -135,6 +136,7 @@ if you regenerate the file differently.
 | `GET /api/equity` | — | `{dates[], equity[]}` downsampled |
 | `GET /api/strategies` | — | registry `[{id, label, description, timeframes[], flat_eod, default_allow_short, default_timeframe, params[{key,label,min,max,step,default,int?,unit?}]}]` — drives the lab form |
 | `GET /api/backtest/run` | `symbol` (def SPY) `strategy` (def sma_crossover) `timeframe` (def 1d) `start` `end` (optional `YYYY-MM-DD`, inclusive; intraday requests clamped to the data window) `qty` `capital` `allow_short` (`true`/`false`) `cost_per_share` + per-strategy params (`fast`,`slow`,`deviation_pct`,`exit_pct`,`range_minutes`,`tp_mult`,`sl_mult`,`max_range_pct`,`rsi_period`,`oversold`,`overbought`,`exit_level`) | `{meta, metrics{...costs_total}, series{OHLCV+smas+equity ≤800 bars}, markers[{index, date, side: buy\|sell, eod?, price}], trades[{..., side, exit_type: signal\|eod, costs}]}` |
+| `POST /api/analyze` | JSON body = same params as `/api/backtest/run` | re-runs the backtest, digests results + allowed param ranges, and returns `{model, analysis}` from the local LLM (`503` when LM Studio is unreachable) |
 
 Data windows per timeframe: `1d` → `BACKTEST_START` (2009); `1m` → 7 days;
 `5m`/`15m`/`30m` → 60 days; `1h` → 730 days (yfinance caps). Intraday
@@ -151,8 +153,10 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
 
 - **Hooks:** `useLive` (no polling), `useStats/useTrades/useEquity` (30 s
   polling), `useStrategies` (registry, fetched once), `useBacktestRun`
-  (conditional SWR key incl. strategy/timeframe/costs params,
-  `keepPreviousData` while re-running; `run(LabValues)`).
+  (conditional SWR key incl. strategy/timeframe/costs params; a new run
+  clears the previous chart immediately — no `keepPreviousData` —
+  `run(LabValues)`), `useLlmAnalysis` (POST `/api/analyze` with the run
+  params, returns `{model, analysis}`).
 - **Validation:** `LabSchema` (zod) — `z.discriminatedUnion("strategy", [...])`
   with a `superRefine` for cross-field rules (fast<slow, exit<deviation,
   oversold<exit<overbought); coerce numbers; RHF typed as
@@ -196,9 +200,10 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
 - **New strategy:** add a signal function + an entry in `STRATEGIES`
   (`strategies.py`); the API, `/api/strategies`, form fields and zod union
   (`web/src/lib/schemas.ts`) need the matching id/params/defaults.
-- **ML advisor:** `strategy.py` can call LM Studio
-  (`http://127.0.0.1:1234/v1/chat/completions`, OpenAI-compatible) to
-  influence signals — same endpoint the user already runs for Qwen locally.
+- **ML advisor:** built-in — run a backtest, hit **Analyze with local LLM**
+  in Trade results; `/api/analyze` (dashboard.py) re-runs the test and asks
+  LM Studio (`http://127.0.0.1:1234/v1`, OpenAI-compatible) for a diagnosis
+  and parameter suggestions bounded by the strategy's allowed ranges.
 - **Risk controls:** stop-loss / max-position / position sizing — add in
   `engine.run_backtest()` (backtest) and the `livebot.py` loop (live).
 - **More tickers in the live bot:** `config.SYMBOL` today; looping a list
@@ -224,8 +229,16 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
 - All 4 strategies verified via the API: SMA (1d/1m), VWAP reversion (5m),
   ORB (5m), RSI reversion (15m) on SPY/AAPL — markers match fills (no phantom
   signals), EOD flattens marked, costs tracked per trade.
+- Open positions at the end of the data are reported as a row with
+  `exit_type: "open"` (exit fields `null`, P&L unrealized, `*` in the UI) —
+  every chart marker now has a table row.
+- **LLM advisor live:** `POST /api/analyze` re-runs the last lab test and has
+  the local LM Studio model return Diagnosis / Suggested configurations /
+  Risks (hermes-3-llama-3.1-8b-lorablated auto-picked — the 27b Qwen is far
+  too slow on this machine; override with `LLM_MODEL` in `.env`, base URL
+  via `LLM_BASE_URL`).
 - Error paths verified: unknown strategy → 400, wrong timeframe → 400,
-  fast ≥ slow / exit ≥ deviation / RSI ordering → 400.
+  fast ≥ slow / exit ≥ deviation / RSI ordering → 400, LM Studio down → 503.
 - Full stack smoke-tested: page 200, `/api/strategies`, `/api/live`,
   `/api/backtest/run` 200 via the Next proxy.
 - `npm run lint` (1 benign React-Compiler/RHF `watch` warning), `npm run build` green.

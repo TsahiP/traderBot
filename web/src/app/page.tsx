@@ -20,7 +20,7 @@ export default function Home() {
   const { data: stats } = useStats();
   const { data: trades } = useTrades();
   const { data: equity } = useEquity();
-  const { run, data: runData, error, isLoading, isValidating } = useBacktestRun();
+  const { run, params, data: runData, error, isLoading, isValidating } = useBacktestRun();
 
   return (
     <div className="flex min-h-svh flex-col">
@@ -134,7 +134,7 @@ export default function Home() {
                       <CardHeader className="pb-3">
                         <CardTitle className="text-sm">Trade results</CardTitle>
                       </CardHeader>
-                      <LabResults data={runData} />
+                      <LabResults data={runData} params={params} />
                     </Card>
                   </>
                 )}

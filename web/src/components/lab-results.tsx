@@ -4,6 +4,7 @@ import { TriangleAlert } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { MetricsStrip } from "@/components/metrics-strip";
+import { LlmAnalysis } from "@/components/llm-analysis";
 import {
   Table,
   TableBody,
@@ -15,6 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { fmtSignedUsd, fmtUsd, pnlClass } from "@/lib/format";
 import type { BacktestRun } from "@/lib/schemas";
+import type { RunParams } from "@/hooks/use-backtest-run";
 
 export function RunError({ message }: { message: string }) {
   return (
@@ -26,11 +28,18 @@ export function RunError({ message }: { message: string }) {
   );
 }
 
-export function LabResults({ data }: { data: BacktestRun }) {
+export function LabResults({
+  data,
+  params,
+}: {
+  data: BacktestRun;
+  params: RunParams | null;
+}) {
   const { metrics, trades, meta } = data;
   return (
     <div className="flex flex-col">
       <MetricsStrip metrics={metrics} />
+      <LlmAnalysis params={params} />
       <Table>
         <TableHeader>
           <TableRow>
