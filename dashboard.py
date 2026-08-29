@@ -5,8 +5,11 @@ Run:
 The Next.js frontend (web/) proxies /api/* to this server (port 8000).
 """
 import json
+import logging
+import math
 import os
 from datetime import date, datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -14,17 +17,57 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+from flask.json.provider import DefaultJSONProvider
 
+# Load .env before config; override=True so .env wins over stale shell env vars.
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
+
+import alpaca_service
 import config
+import crypto_analysis
 import engine
+import stock_analysis
 import strategies
-from livebot import get_last_completed_bars
 from strategy import compute_signals, latest_signal
 
-load_dotenv(config.BASE_DIR / ".env")
 NY = ZoneInfo("America/New_York")
 
+# Configure dashboard logging
+logger = logging.getLogger("tradebot_api")
+logger.setLevel(logging.INFO)
+_dash_handler = RotatingFileHandler(
+    config.LOG_DIR / "dashboard.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+)
+_dash_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+if not logger.handlers:
+    logger.addHandler(_dash_handler)
+
+def sanitize_for_json(obj):
+    """Recursively replace NaN and Inf float values so JSON output is RFC 8259 compliant."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return 0.0
+        return obj
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_for_json(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [sanitize_for_json(v) for v in obj]
+    if pd.isna(obj) and not isinstance(obj, (str, bool)):
+        return None
+    return obj
+
+
+class SafeJSONProvider(DefaultJSONProvider):
+    def dumps(self, obj, **kwargs):
+        sanitized = sanitize_for_json(obj)
+        return super().dumps(sanitized, **kwargs)
+
+
 app = Flask(__name__)
+app.json_provider_class = SafeJSONProvider
+app.json = SafeJSONProvider(app)
 
 TRADES_FILE = config.OUTPUT_DIR / "live_trades.csv"
 TRADES_BT_FILE = config.OUTPUT_DIR / "trades.csv"
@@ -48,85 +91,96 @@ def parse_date(value: str | None, label: str) -> date | None:
 
 
 def fmt_ts(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
     return str(value)[:16].replace("T", " ")
 
 
 def load_live_trades() -> list[dict]:
     if not TRADES_FILE.exists():
         return []
-    rows = pd.read_csv(TRADES_FILE, dtype={"qty": float})
-    return [
-        {
-            "entry_date": fmt_ts(r["entry_date"]),
-            "entry_price": float(r["entry_price"]),
-            "exit_date": fmt_ts(r["exit_date"]),
-            "exit_price": float(r["exit_price"]),
-            "qty": int(r["qty"]),
-            "pnl": float(r["pnl"]),
-            "source": "live",
-        }
-        for _, r in rows.iterrows()
-    ]
+    try:
+        rows = pd.read_csv(TRADES_FILE, dtype={"qty": float})
+        trades = []
+        for _, r in rows.iterrows():
+            entry_p = float(r["entry_price"]) if pd.notna(r.get("entry_price")) else 0.0
+            exit_p = float(r["exit_price"]) if pd.notna(r.get("exit_price")) else 0.0
+            pnl_val = float(r["pnl"]) if pd.notna(r.get("pnl")) else 0.0
+            trades.append({
+                "symbol": str(r["symbol"]) if pd.notna(r.get("symbol")) else config.SYMBOL,
+                "entry_date": fmt_ts(r.get("entry_date")),
+                "entry_price": entry_p if not (np.isnan(entry_p) or np.isinf(entry_p)) else 0.0,
+                "exit_date": fmt_ts(r.get("exit_date")),
+                "exit_price": exit_p if not (np.isnan(exit_p) or np.isinf(exit_p)) else 0.0,
+                "qty": int(r["qty"]) if pd.notna(r.get("qty")) else 0,
+                "pnl": pnl_val if not (np.isnan(pnl_val) or np.isinf(pnl_val)) else 0.0,
+                "source": "live",
+            })
+        return trades
+    except Exception as exc:
+        logger.warning("Error reading live trades: %s", exc)
+        return []
 
 
 def load_backtest_trades() -> list[dict]:
     if not TRADES_BT_FILE.exists():
         return []
-    rows = pd.read_csv(TRADES_BT_FILE)
-    return [
-        {
-            "entry_date": fmt_ts(r["entry_date"]),
-            "entry_price": float(r["entry_price"]),
-            "exit_date": fmt_ts(r["exit_date"]),
-            "exit_price": float(r["exit_price"]),
-            "qty": config.QUANTITY,
-            "pnl": float(r["pnl"]),
-            "source": "backtest",
-        }
-        for _, r in rows.iterrows()
-    ]
+    try:
+        rows = pd.read_csv(TRADES_BT_FILE)
+        trades = []
+        for _, r in rows.iterrows():
+            entry_p = float(r["entry_price"]) if pd.notna(r.get("entry_price")) else 0.0
+            exit_p = float(r["exit_price"]) if pd.notna(r.get("exit_price")) else None
+            pnl_val = float(r["pnl"]) if pd.notna(r.get("pnl")) else 0.0
+            costs_val = float(r.get("costs", 0.0)) if pd.notna(r.get("costs")) else 0.0
+            trades.append({
+                "symbol": str(r["symbol"]) if pd.notna(r.get("symbol")) else config.SYMBOL,
+                "entry_date": fmt_ts(r.get("entry_date")),
+                "entry_price": entry_p if not (np.isnan(entry_p) or np.isinf(entry_p)) else 0.0,
+                "exit_date": fmt_ts(r["exit_date"]) if pd.notna(r.get("exit_date")) else None,
+                "exit_price": (
+                    exit_p if exit_p is not None and not (np.isnan(exit_p) or np.isinf(exit_p)) else None
+                ),
+                "qty": int(r.get("qty", config.QUANTITY)),
+                "pnl": pnl_val if not (np.isnan(pnl_val) or np.isinf(pnl_val)) else 0.0,
+                "costs": costs_val if not (np.isnan(costs_val) or np.isinf(costs_val)) else 0.0,
+                "source": "backtest",
+            })
+        return trades
+    except Exception as exc:
+        logger.warning("Error reading backtest trades: %s", exc)
+        return []
 
 
 def load_backtest_curve() -> pd.DataFrame | None:
     if not EQUITY_FILE.exists():
         return None
-    df = pd.read_csv(EQUITY_FILE, index_col="date")
-    df.index = pd.to_datetime(df.index, utc=True).tz_convert(None)
-    return df
+    try:
+        df = pd.read_csv(EQUITY_FILE, index_col="date")
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert(None)
+        df = df.dropna(subset=["equity", "Close"])
+        return df if not df.empty else None
+    except Exception as exc:
+        logger.warning("Error reading equity curve: %s", exc)
+        return None
 
 
 def live_snapshot() -> dict:
-    key = os.getenv("ALPACA_API_KEY")
-    secret = os.getenv("ALPACA_SECRET_KEY")
-    if not key or not secret:
+    if not alpaca_service.has_alpaca_credentials():
         return {"connected": False, "reason": "missing .env keys - copy .env.example and add paper keys"}
 
     try:
-        from alpaca.data.historical import StockHistoricalDataClient
-        from alpaca.trading.client import TradingClient
-
-        trading = TradingClient(key, secret, paper=True)
-        data = StockHistoricalDataClient(key, secret)
+        trading = alpaca_service.get_trading_client(paper=config.ALPACA_PAPER)
+        data = alpaca_service.get_data_client()
 
         clock = trading.get_clock()
-        bars = get_last_completed_bars(data)
+        bars = alpaca_service.get_last_completed_bars(data, symbol=config.SYMBOL, limit=config.ALPACA_BARS_LIMIT)
+        if bars.empty:
+            return {"connected": False, "reason": "No market bars returned from Alpaca"}
+
         df = compute_signals(bars, config.SMA_FAST, config.SMA_SLOW)
         signal = latest_signal(df)
-
-        account = trading.get_account()
-        position = None
-        try:
-            p = trading.get_open_position(config.SYMBOL)
-            position = {
-                "qty": float(p.qty),
-                "avg_entry": float(p.avg_entry_price),
-                "current": float(p.current_price),
-                "market_value": float(p.market_value),
-                "unrealized_pl": float(p.unrealized_pl),
-                "unrealized_pl_pct": float(p.unrealized_plpc),
-            }
-        except Exception:
-            position = None
+        snapshot = alpaca_service.get_account_snapshot(trading, symbol=config.SYMBOL)
 
         return {
             "connected": True,
@@ -136,26 +190,63 @@ def live_snapshot() -> dict:
             "sma_fast": float(df["sma_fast"].iloc[-1]),
             "sma_slow": float(df["sma_slow"].iloc[-1]),
             "signal": signal,
-            "account": {
-                "equity": float(account.equity),
-                "cash": float(account.cash),
-                "buying_power": float(account.buying_power),
-            },
-            "position": position,
+            "account": snapshot["account"],
+            "position": snapshot["position"],
         }
     except Exception as exc:
+        logger.warning("Alpaca snapshot error: %s", exc)
         return {"connected": False, "reason": f"Alpaca error: {exc}"}
 
 
 def build_run_payload(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: float) -> dict:
     """Downsample the curve for the browser and extract buy/sell markers."""
+    if curve is None or curve.empty:
+        return {
+            "series": {
+                "dates": [],
+                "open": [],
+                "high": [],
+                "low": [],
+                "close": [],
+                "volume": [],
+                "sma_fast": [],
+                "sma_slow": [],
+                "equity": [],
+            },
+            "markers": [],
+            "metrics": engine.compute_metrics(curve, trades_df, capital),
+            "trades": [],
+        }
+
     n = len(curve)
     step = max(1, (n + MAX_SERIES_BARS - 1) // MAX_SERIES_BARS)
     sub = curve.iloc[::step]
     pos_of = lambda orig_pos: min(orig_pos // step, len(sub) - 1)
 
     intraday = str(curve.index[0])[11:16] != "00:00"
-    ts = fmt_ts if intraday else (lambda v: str(v.date()))
+    ts = fmt_ts if intraday else (lambda v: str(v.date()) if hasattr(v, "date") else str(v)[:10])
+
+    def _safe_float(v, default=0.0):
+        try:
+            if v is None or pd.isna(v):
+                return default
+            f = float(v)
+            if np.isnan(f) or np.isinf(f):
+                return default
+            return round(f, 2)
+        except (ValueError, TypeError):
+            return default
+
+    def _safe_int(v, default=0):
+        try:
+            if v is None or pd.isna(v):
+                return default
+            f = float(v)
+            if np.isnan(f) or np.isinf(f):
+                return default
+            return int(f)
+        except (ValueError, TypeError):
+            return default
 
     markers = []
     order_idx = curve.index[curve["exec"] != ""].tolist()
@@ -165,7 +256,7 @@ def build_run_payload(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: flo
             "index": pos_of(curve.index.get_loc(orig)),
             "date": ts(orig),
             "side": str(row["exec"]),
-            "price": round(float(row["Open"]), 2),
+            "price": _safe_float(row.get("Open", 0.0)),
         })
     eod_idx = curve.index[curve["eod_exit"] != ""].tolist()
     for orig in eod_idx:
@@ -174,48 +265,48 @@ def build_run_payload(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: flo
             "date": ts(orig),
             "side": str(curve.at[orig, "eod_exit"]),
             "eod": True,
-            "price": round(float(curve.at[orig, "Close"]), 2),
+            "price": _safe_float(curve.at[orig, "Close"]),
         })
 
     has_sma = "sma_fast" in curve.columns
     return {
         "series": {
             "dates": [ts(d) for d in sub.index],
-            "open": [round(float(v), 2) for v in sub["Open"]],
-            "high": [round(float(v), 2) for v in sub["High"]],
-            "low": [round(float(v), 2) for v in sub["Low"]],
-            "close": [round(float(v), 2) for v in sub["Close"]],
-            "volume": [int(v) for v in sub["Volume"]],
+            "open": [_safe_float(v) for v in sub["Open"]],
+            "high": [_safe_float(v) for v in sub["High"]],
+            "low": [_safe_float(v) for v in sub["Low"]],
+            "close": [_safe_float(v) for v in sub["Close"]],
+            "volume": [_safe_int(v) for v in sub["Volume"]],
             "sma_fast": (
-                [round(float(v), 2) if not np.isnan(v) else None for v in sub["sma_fast"]]
+                [_safe_float(v, default=None) if pd.notna(v) and not np.isinf(float(v)) else None for v in sub["sma_fast"]]
                 if has_sma else [None] * len(sub)
             ),
             "sma_slow": (
-                [round(float(v), 2) if not np.isnan(v) else None for v in sub["sma_slow"]]
+                [_safe_float(v, default=None) if pd.notna(v) and not np.isinf(float(v)) else None for v in sub["sma_slow"]]
                 if has_sma else [None] * len(sub)
             ),
-            "equity": [round(float(v), 2) for v in sub["equity"]],
+            "equity": [_safe_float(v, default=capital) for v in sub["equity"]],
         },
         "markers": markers,
         "metrics": engine.compute_metrics(curve, trades_df, capital),
         "trades": [
             {
                 "entry_date": ts(r["entry_date"]),
-                "entry_price": round(float(r["entry_price"]), 2),
+                "entry_price": _safe_float(r["entry_price"]),
                 "exit_date": (
                     None
                     if r["exit_date"] is None or pd.isna(r["exit_date"])
                     else ts(r["exit_date"])
                 ),
                 "exit_price": (
-                    round(float(r["exit_price"]), 2)
+                    _safe_float(r["exit_price"], default=None)
                     if r["exit_price"] is not None and not pd.isna(r["exit_price"])
                     else None
                 ),
                 "side": r["side"],
                 "exit_type": r["exit_type"],
-                "pnl": round(float(r["pnl"]), 2),
-                "costs": round(float(r["costs"]), 2),
+                "pnl": _safe_float(r["pnl"]),
+                "costs": _safe_float(r["costs"]),
             }
             for _, r in trades_df.iterrows()
         ],
@@ -229,14 +320,14 @@ def api_stats():
 
     realized = {
         "trades": len(live),
-        "total_pnl": round(sum(t["pnl"] for t in live), 2),
-        "wins": sum(1 for t in live if t["pnl"] > 0),
+        "total_pnl": round(sum(t.get("pnl", 0.0) for t in live if not np.isnan(t.get("pnl", 0.0))), 2),
+        "wins": sum(1 for t in live if t.get("pnl", 0.0) > 0),
     }
     if realized["trades"]:
         realized["win_rate"] = realized["wins"] / realized["trades"]
 
     backtest = None
-    if curve is not None:
+    if curve is not None and not curve.empty:
         bt = load_backtest_trades()
         backtest = engine.compute_metrics(curve, pd.DataFrame(bt), config.CAPITAL)
 
@@ -246,20 +337,20 @@ def api_stats():
 @app.route("/api/trades")
 def api_trades():
     trades = load_live_trades() + load_backtest_trades()
-    trades.sort(key=lambda t: t["exit_date"], reverse=True)
+    trades.sort(key=lambda t: t.get("exit_date") or t.get("entry_date") or "", reverse=True)
     return jsonify({"trades": trades})
 
 
 @app.route("/api/equity")
 def api_equity():
     curve = load_backtest_curve()
-    if curve is None:
+    if curve is None or curve.empty:
         return jsonify({"dates": [], "equity": []})
     step = max(1, len(curve) // 600)
     sub = curve.iloc[::step]
     return jsonify({
-        "dates": [str(d.date()) for d in sub.index],
-        "equity": [float(v) for v in sub["equity"]],
+        "dates": [str(d.date()) if hasattr(d, "date") else str(d)[:10] for d in sub.index],
+        "equity": [float(v) if pd.notna(v) and not (np.isnan(float(v)) or np.isinf(float(v))) else 0.0 for v in sub["equity"]],
     })
 
 
@@ -269,15 +360,26 @@ def api_live():
 
     if not snap["connected"]:
         curve = load_backtest_curve()
-        if curve is not None:
+        if curve is not None and not curve.empty:
             last = curve.iloc[-1]
+            close_v = float(last["Close"]) if pd.notna(last.get("Close")) else 0.0
+            sma_f = (
+                float(last["sma_fast"])
+                if "sma_fast" in last and pd.notna(last["sma_fast"]) and not np.isinf(float(last["sma_fast"]))
+                else None
+            )
+            sma_s = (
+                float(last["sma_slow"])
+                if "sma_slow" in last and pd.notna(last["sma_slow"]) and not np.isinf(float(last["sma_slow"]))
+                else None
+            )
             return jsonify({
                 **snap,
                 "symbol": config.SYMBOL,
-                "close": float(last["Close"]),
-                "sma_fast": float(last["sma_fast"]),
-                "sma_slow": float(last["sma_slow"]),
-                "signal": int(last["signal"]) if last["signal"] else 0,
+                "close": close_v if not (np.isnan(close_v) or np.isinf(close_v)) else 0.0,
+                "sma_fast": sma_f,
+                "sma_slow": sma_s,
+                "signal": int(last["signal"]) if last.get("signal") and pd.notna(last.get("signal")) else 0,
                 "fallback": "backtest",
             })
     return jsonify(snap)
@@ -300,6 +402,46 @@ def api_strategies():
     ])
 
 
+@app.route("/api/watchlist")
+def api_watchlist():
+    return jsonify({"watchlist": config.WATCHLIST})
+
+
+@app.route("/api/stock-analysis")
+def api_stock_analysis():
+    symbol = (request.args.get("symbol") or config.SYMBOL).strip().upper()
+    if not symbol or len(symbol) > 12 or not symbol.replace(".", "").replace("-", "").isalnum():
+        return jsonify({"error": "Invalid symbol - use e.g. AAPL, NVDA, SPY"}), 400
+    try:
+        result = stock_analysis.analyze_stock(symbol)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:
+        logger.exception("Stock analysis error for %s: %s", symbol, exc)
+        return jsonify({"error": f"Failed analyzing {symbol}: {exc}"}), 500
+
+
+@app.route("/api/crypto-analysis")
+def api_crypto_analysis():
+    symbol = request.args.get("symbol")
+    try:
+        if symbol and symbol.strip():
+            sym = symbol.strip().upper()
+            if not sym.replace(".", "").replace("-", "").isalnum():
+                return jsonify({"error": "Invalid crypto symbol - use e.g. BTC-USD, ETH-USD"}), 400
+            result = crypto_analysis.analyze_crypto(sym)
+            return jsonify(result)
+        else:
+            overview = crypto_analysis.get_crypto_top20_overview()
+            return jsonify(overview)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:
+        logger.exception("Crypto analysis error: %s", exc)
+        return jsonify({"error": f"Failed analyzing crypto: {exc}"}), 500
+
+
 def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
     """Parse a run request (query params or JSON body) and execute it.
 
@@ -315,12 +457,12 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         if isinstance(allow_short_raw, bool):
             allow_short = allow_short_raw
         else:
-            allow_short = (allow_short_raw or "false").lower() in ("1", "true", "yes")
+            allow_short = str(allow_short_raw or "false").lower() in ("1", "true", "yes")
         cost_per_share = float(raw.get("cost_per_share") or 0.0)
-    except ValueError:
+    except (ValueError, TypeError):
         return None, 400, "Invalid parameter values"
 
-    if not symbol or len(symbol) > 12 or not symbol.replace(".", "").isalnum():
+    if not symbol or len(symbol) > 12 or not symbol.replace(".", "").replace("-", "").isalnum():
         return None, 400, "Invalid symbol - use e.g. SPY, AAPL, BTC-USD"
     if strategy_id not in strategies.STRATEGIES:
         return None, 400, f"Unknown strategy '{strategy_id}'"
@@ -357,7 +499,7 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
 
     kwargs: dict = {"auto_adjust": True, "actions": False}
     if timeframe == "1d":
-        kwargs["start"] = (start_d or config.BACKTEST_START).isoformat()
+        kwargs["start"] = start_d.isoformat() if start_d else config.BACKTEST_START
         if end_d:
             kwargs["end"] = (end_d + timedelta(days=1)).isoformat()
     else:
@@ -371,35 +513,49 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         if end_d:
             kwargs["end"] = (min(end_d, now.date()) + timedelta(days=1)).isoformat()
 
-    df = yf.Ticker(symbol).history(**kwargs)
+    try:
+        df = yf.Ticker(symbol).history(**kwargs)
+    except Exception as exc:
+        logger.warning("yfinance error for %s: %s", symbol, exc)
+        return None, 404, f"Failed to download data for '{symbol}'"
+
     if df.empty:
         return None, 404, f"No data for '{symbol}' - check the ticker symbol"
 
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    df = df[(df["Open"] > 0) & (df["High"] > 0) & (df["Low"] > 0) & (df["Close"] > 0)]
+    if df.empty or len(df) < 2:
+        return None, 400, f"Insufficient price history for '{symbol}' - please choose a wider date range"
+
     flat_eod = spec["flat_eod"] and timeframe != "1d"
-    curve, trades_df = engine.run_backtest(
-        df,
-        strategy=strategy_id,
-        params=params,
-        qty=qty,
-        capital=capital,
-        allow_short=allow_short,
-        cost_per_share=cost_per_share,
-        flat_eod=flat_eod,
-    )
-    payload = build_run_payload(curve, trades_df, capital)
-    payload["meta"] = {
-        "symbol": symbol,
-        "strategy": strategy_id,
-        "strategy_label": spec["label"],
-        "timeframe": timeframe,
-        "qty": qty,
-        "capital": capital,
-        "allow_short": allow_short,
-        "cost_per_share": cost_per_share,
-        "flat_eod": flat_eod,
-        "params": {k: v for k, v in params.items()},
-    }
-    return payload, 200, None
+    try:
+        curve, trades_df = engine.run_backtest(
+            df,
+            strategy=strategy_id,
+            params=params,
+            qty=qty,
+            capital=capital,
+            allow_short=allow_short,
+            cost_per_share=cost_per_share,
+            flat_eod=flat_eod,
+        )
+        payload = build_run_payload(curve, trades_df, capital)
+        payload["meta"] = {
+            "symbol": symbol,
+            "strategy": strategy_id,
+            "strategy_label": spec["label"],
+            "timeframe": timeframe,
+            "qty": qty,
+            "capital": capital,
+            "allow_short": allow_short,
+            "cost_per_share": cost_per_share,
+            "flat_eod": flat_eod,
+            "params": {k: v for k, v in params.items()},
+        }
+        return payload, 200, None
+    except Exception as exc:
+        logger.exception("Engine failure for %s (%s): %s", symbol, strategy_id, exc)
+        return None, 500, f"Backtest engine error: {exc}"
 
 
 @app.route("/api/backtest/run")
@@ -422,17 +578,17 @@ Rules:
 - Answer with exactly three short markdown sections: "## Diagnosis", "## Suggested configurations", "## Risks".
 - Keep it under 350 words."""
 
-_llm_model: str | None = None
+_auto_llm_model: str | None = None
 
 
 def resolve_llm_model() -> str:
-    """Pick the model to chat with: configured one, or best auto-detect."""
-    global _llm_model
-    if _llm_model:
-        return _llm_model
-    if config.LLM_MODEL:
-        _llm_model = config.LLM_MODEL
-        return _llm_model
+    """Pick the model to chat with. Priority: .env LLM_MODEL > config default; auto only if LLM_MODEL=auto."""
+    global _auto_llm_model
+    model, auto_pick = config.resolve_llm_model_setting()
+    if not auto_pick:
+        return model
+    if _auto_llm_model:
+        return _auto_llm_model
     import requests as _requests
 
     r = _requests.get(f"{config.LLM_BASE_URL}/models", timeout=10)
@@ -448,7 +604,7 @@ def resolve_llm_model() -> str:
     )
     if not pick:
         raise RuntimeError("no chat models found in LM Studio")
-    _llm_model = pick
+    _auto_llm_model = pick
     return pick
 
 
@@ -482,7 +638,7 @@ def build_analysis_context(payload: dict, spec: dict) -> str:
     short_trades = [t for t in closed if t["side"] == "short"]
 
     return json.dumps(
-        {
+        sanitize_for_json({
             "config": {
                 "symbol": meta["symbol"],
                 "strategy": meta["strategy_label"],
@@ -497,7 +653,7 @@ def build_analysis_context(payload: dict, spec: dict) -> str:
             "results_decimal_fractions": {
                 "start": metrics["start"],
                 "end": metrics["end"],
-                "total_return": metrics["total_return"],   # e.g. -0.27 = -27%
+                "total_return": metrics["total_return"],
                 "cagr": metrics["cagr"],
                 "buy_hold": metrics["buy_hold"],
                 "max_drawdown": metrics["max_drawdown"],
@@ -529,7 +685,7 @@ def build_analysis_context(payload: dict, spec: dict) -> str:
                 for p in spec["params"]
             ],
             "strategy_notes": spec["description"],
-        },
+        }),
         indent=1,
         default=str,
     )
@@ -560,6 +716,7 @@ def api_analyze():
             ]
         )
     except Exception as exc:
+        logger.warning("LLM analyze failure: %s", exc)
         return (
             jsonify(
                 {

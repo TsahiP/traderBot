@@ -58,6 +58,7 @@ export const Stats = z.object({
 export type Stats = z.infer<typeof Stats>;
 
 export const Trade = z.object({
+  symbol: z.string().optional(),
   entry_date: z.string(),
   entry_price: z.number(),
   exit_date: z.string(),
@@ -178,6 +179,67 @@ export const AnalysisResponse = z.object({
   analysis: z.string(),
 });
 export type AnalysisResponse = z.infer<typeof AnalysisResponse>;
+
+export const StockDimension = z.object({
+  id: z.string(),
+  label: z.string(),
+  base_weight: z.number(),
+  normalized_weight: z.number(),
+  score: z.number().nullable(),
+  summary: z.string(),
+  metrics: z.record(z.string(), z.any()),
+});
+export type StockDimension = z.infer<typeof StockDimension>;
+
+export const StockAnalysisResponse = z.object({
+  symbol: z.string(),
+  company_name: z.string(),
+  current_price: z.number(),
+  currency: z.string().optional(),
+  overall_score: z.number(),
+  recommendation: z.string(),
+  confidence_pct: z.number(),
+  risk_flags: z.array(z.string()),
+  dimensions: z.array(StockDimension),
+  timestamp: z.string(),
+});
+export type StockAnalysisResponse = z.infer<typeof StockAnalysisResponse>;
+
+export const CryptoAsset = z.object({
+  symbol: z.string(),
+  name: z.string(),
+  category: z.string(),
+  current_price: z.number(),
+  market_cap: z.number().nullable().optional(),
+  market_cap_class: z.string(),
+  volume_24h: z.number().nullable().optional(),
+  change_24h_pct: z.number(),
+  change_7d_pct: z.number(),
+  change_30d_pct: z.number(),
+  btc_correlation_30d: z.number(),
+  realized_vol_30d_pct: z.number(),
+  volatility_regime: z.string(),
+  volatility_description: z.string(),
+  rsi_14: z.number(),
+  price_vs_sma20_pct: z.number(),
+  price_vs_sma50_pct: z.number(),
+  range_52w_position_pct: z.number(),
+  composite_score: z.number(),
+  signal: z.string(),
+});
+export type CryptoAsset = z.infer<typeof CryptoAsset>;
+
+export const CryptoOverviewResponse = z.object({
+  assets: z.array(CryptoAsset),
+  count: z.number(),
+  timestamp: z.string(),
+});
+export type CryptoOverviewResponse = z.infer<typeof CryptoOverviewResponse>;
+
+export const WatchlistResponse = z.object({
+  watchlist: z.array(z.string()),
+});
+export type WatchlistResponse = z.infer<typeof WatchlistResponse>;
 
 export const ApiError = z.object({ error: z.string() });
 export type ApiError = z.infer<typeof ApiError>;

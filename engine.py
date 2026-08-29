@@ -11,6 +11,7 @@ Simulation model:
   - flat_eod: any open position is force-closed at the last bar of its
     session (day-trading strategies never hold overnight)
 """
+import numpy as np
 import pandas as pd
 
 from strategies import run_strategy
@@ -33,7 +34,24 @@ def run_backtest(
     Volume plus signal, order (signal shifted by one bar), shares, cash,
     equity, and eod_exit (side of any forced session-end close).
     """
-    df = run_strategy(strategy, df, dict(params or {}))
+    df = df.copy()
+    if df.empty:
+        cols = [
+            "Open", "High", "Low", "Close", "Volume",
+            "signal", "order", "eod_exit", "exec", "shares", "cash", "equity",
+        ]
+        return pd.DataFrame(columns=cols), pd.DataFrame()
+
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    df = df[(df["Open"] > 0) & (df["High"] > 0) & (df["Low"] > 0) & (df["Close"] > 0)]
+    if df.empty:
+        cols = [
+            "Open", "High", "Low", "Close", "Volume",
+            "signal", "order", "eod_exit", "exec", "shares", "cash", "equity",
+        ]
+        return pd.DataFrame(columns=cols), pd.DataFrame()
+
+    df = run_strategy(strategy, df, dict(params or {}), allow_short=allow_short)
     df["order"] = df["signal"].shift(1).fillna(0).astype(int)
     df["eod_exit"] = ""
     df["exec"] = ""
@@ -42,6 +60,7 @@ def run_backtest(
         set(df.groupby(df.index.date).tail(1).index) if flat_eod else set()
     )
 
+    cost_per_trade = float(cost_per_share * qty)
     cash = float(capital)
     shares = 0
     entry_price = None
@@ -50,78 +69,132 @@ def run_backtest(
     trades = []
 
     for idx, row in df.iterrows():
-        cost = cost_per_share * qty
+        open_price = float(row["Open"])
+        close_price = float(row["Close"])
+        order = int(row["order"])
 
-        if shares == 0:
-            if row["order"] == 1 and cash >= (row["Open"] + cost) * qty:
-                shares = qty
-                cash -= (row["Open"] + cost) * qty
-                entry_price, entry_date, entry_side = row["Open"], idx, "long"
-                df.at[idx, "exec"] = "buy"
-            elif row["order"] == -1 and allow_short and cash >= (row["Open"] + cost) * qty:
-                shares = -qty
-                cash += (row["Open"] - cost) * qty
-                entry_price, entry_date, entry_side = row["Open"], idx, "short"
-                df.at[idx, "exec"] = "sell"
-        elif (row["order"] == -1 and shares > 0) or (row["order"] == 1 and shares < 0):
-            if shares > 0:
-                cash += (row["Open"] - cost) * shares
-                pnl = (row["Open"] - entry_price) * shares - 2 * cost * qty
-                df.at[idx, "exec"] = "sell"
-            else:
-                cash -= (row["Open"] + cost) * -shares
-                pnl = (entry_price - row["Open"]) * -shares - 2 * cost * qty
-                df.at[idx, "exec"] = "buy"
+        # 1. Close or reverse existing positions on signal
+        if shares > 0 and order == -1:
+            # Close long position
+            cash += open_price * qty - cost_per_trade
+            pnl = (open_price - entry_price) * qty - 2 * cost_per_trade
+            df.at[idx, "exec"] = "sell"
             trades.append(
                 {
                     "entry_date": entry_date,
                     "entry_price": entry_price,
                     "exit_date": idx,
-                    "exit_price": row["Open"],
-                    "side": entry_side,
+                    "exit_price": open_price,
+                    "side": "long",
                     "exit_type": "signal",
-                    "pnl": pnl,
-                    "costs": 2 * cost * qty,
+                    "pnl": round(pnl, 2),
+                    "costs": round(2 * cost_per_trade, 2),
                 }
             )
             shares = 0
             entry_price = entry_date = entry_side = None
 
-        if shares != 0 and idx in last_of_session:
-            cost = cost_per_share * qty
-            if shares > 0:
-                cash += (row["Close"] - cost) * shares
-                pnl = (row["Close"] - entry_price) * shares - 2 * cost * qty
-                df.at[idx, "eod_exit"] = "sell"
-            else:
-                cash -= (row["Close"] + cost) * -shares
-                pnl = (entry_price - row["Close"]) * -shares - 2 * cost * qty
-                df.at[idx, "eod_exit"] = "buy"
+            # For reversal strategies like SMA crossover with allow_short, open short immediately
+            if allow_short and strategy == "sma_crossover":
+                required_cash = open_price * qty + cost_per_trade
+                if cash >= required_cash:
+                    shares = -qty
+                    cash += open_price * qty - cost_per_trade
+                    entry_price, entry_date, entry_side = open_price, idx, "short"
+
+        elif shares < 0 and order == 1:
+            # Close short position
+            cash -= open_price * qty + cost_per_trade
+            pnl = (entry_price - open_price) * qty - 2 * cost_per_trade
+            df.at[idx, "exec"] = "buy"
             trades.append(
                 {
                     "entry_date": entry_date,
                     "entry_price": entry_price,
                     "exit_date": idx,
-                    "exit_price": row["Close"],
-                    "side": entry_side,
-                    "exit_type": "eod",
-                    "pnl": pnl,
-                    "costs": 2 * cost * qty,
+                    "exit_price": open_price,
+                    "side": "short",
+                    "exit_type": "signal",
+                    "pnl": round(pnl, 2),
+                    "costs": round(2 * cost_per_trade, 2),
                 }
             )
+            shares = 0
+            entry_price = entry_date = entry_side = None
+
+            # For reversal strategies like SMA crossover, open long immediately
+            if strategy == "sma_crossover":
+                required_cash = open_price * qty + cost_per_trade
+                if cash >= required_cash:
+                    shares = qty
+                    cash -= required_cash
+                    entry_price, entry_date, entry_side = open_price, idx, "long"
+
+        # 2. Open new position from flat
+        elif shares == 0:
+            if order == 1:
+                required_cash = open_price * qty + cost_per_trade
+                if cash >= required_cash:
+                    shares = qty
+                    cash -= required_cash
+                    entry_price, entry_date, entry_side = open_price, idx, "long"
+                    df.at[idx, "exec"] = "buy"
+            elif order == -1 and allow_short:
+                required_cash = open_price * qty + cost_per_trade
+                if cash >= required_cash:
+                    shares = -qty
+                    cash += open_price * qty - cost_per_trade
+                    entry_price, entry_date, entry_side = open_price, idx, "short"
+                    df.at[idx, "exec"] = "sell"
+
+        # 3. Forced EOD session-end close for intraday flat_eod strategies
+        if shares != 0 and idx in last_of_session:
+            if shares > 0:
+                cash += close_price * qty - cost_per_trade
+                pnl = (close_price - entry_price) * qty - 2 * cost_per_trade
+                df.at[idx, "eod_exit"] = "sell"
+                trades.append(
+                    {
+                        "entry_date": entry_date,
+                        "entry_price": entry_price,
+                        "exit_date": idx,
+                        "exit_price": close_price,
+                        "side": "long",
+                        "exit_type": "eod",
+                        "pnl": round(pnl, 2),
+                        "costs": round(2 * cost_per_trade, 2),
+                    }
+                )
+            else:
+                cash -= close_price * qty + cost_per_trade
+                pnl = (entry_price - close_price) * qty - 2 * cost_per_trade
+                df.at[idx, "eod_exit"] = "buy"
+                trades.append(
+                    {
+                        "entry_date": entry_date,
+                        "entry_price": entry_price,
+                        "exit_date": idx,
+                        "exit_price": close_price,
+                        "side": "short",
+                        "exit_type": "eod",
+                        "pnl": round(pnl, 2),
+                        "costs": round(2 * cost_per_trade, 2),
+                    }
+                )
             shares = 0
             entry_price = entry_date = entry_side = None
 
         df.at[idx, "shares"] = shares
         df.at[idx, "cash"] = cash
-        df.at[idx, "equity"] = cash + shares * row["Close"]
+        df.at[idx, "equity"] = cash + shares * close_price
 
+    # 4. Record any open position remaining at end of dataset
     if shares != 0 and entry_price is not None:
         last_close = float(df["Close"].iloc[-1])
         if shares > 0:
-            unrealized = (last_close - entry_price) * shares - cost_per_share * qty
+            unrealized = (last_close - entry_price) * qty - cost_per_trade
         else:
-            unrealized = (entry_price - last_close) * -shares - cost_per_share * qty
+            unrealized = (entry_price - last_close) * qty - cost_per_trade
         trades.append(
             {
                 "entry_date": entry_date,
@@ -130,8 +203,8 @@ def run_backtest(
                 "exit_price": None,
                 "side": entry_side,
                 "exit_type": "open",
-                "pnl": unrealized,
-                "costs": cost_per_share * qty,
+                "pnl": round(unrealized, 2),
+                "costs": round(cost_per_trade, 2),
             }
         )
 
@@ -147,32 +220,114 @@ def run_backtest(
 
 
 def max_drawdown(equity: pd.Series) -> float:
-    peak = equity.cummax()
-    return float((equity / peak - 1).min())
+    if equity is None or equity.empty:
+        return 0.0
+    clean = equity.dropna()
+    if clean.empty:
+        return 0.0
+    peak = clean.cummax()
+    drawdown = (clean - peak) / peak.replace(0, np.nan)
+    dd_min = float(drawdown.min())
+    if np.isnan(dd_min) or np.isinf(dd_min):
+        return 0.0
+    return dd_min
 
 
 def compute_metrics(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: float) -> dict:
-    equity = curve["equity"]
-    final_equity = float(equity.iloc[-1])
-    days = max((equity.index[-1] - equity.index[0]).days, 1)
+    if curve is None or curve.empty or "equity" not in curve.columns or len(curve) == 0:
+        return {
+            "start": "",
+            "end": "",
+            "final_equity": round(float(capital), 2),
+            "total_return": 0.0,
+            "cagr": 0.0,
+            "max_drawdown": 0.0,
+            "buy_hold": 0.0,
+            "trades": 0,
+            "wins": 0,
+            "win_rate": None,
+            "costs_total": 0.0,
+        }
+
+    equity = curve["equity"].dropna()
+    if equity.empty:
+        final_equity = float(capital)
+    else:
+        final_equity = float(equity.iloc[-1])
+        if np.isnan(final_equity) or np.isinf(final_equity):
+            final_equity = float(capital)
+
+    start_date = (
+        str(curve.index[0].date())
+        if hasattr(curve.index[0], "date")
+        else str(curve.index[0])[:10]
+    )
+    end_date = (
+        str(curve.index[-1].date())
+        if hasattr(curve.index[-1], "date")
+        else str(curve.index[-1])[:10]
+    )
+
+    days = max((curve.index[-1] - curve.index[0]).days, 1)
     years = max(days / 365.25, 1e-9)
-    n_trades = len(trades_df)
-    wins = int((trades_df["pnl"] > 0).sum()) if n_trades else 0
+    n_trades = len(trades_df) if trades_df is not None else 0
+    wins = (
+        int((trades_df["pnl"] > 0).sum())
+        if n_trades and "pnl" in trades_df.columns
+        else 0
+    )
     costs = (
         float(trades_df["costs"].sum())
         if n_trades and "costs" in trades_df.columns
         else 0.0
     )
+    if np.isnan(costs) or np.isinf(costs):
+        costs = 0.0
+
+    total_return = (final_equity / capital - 1.0) if capital > 0 else 0.0
+    if np.isnan(total_return) or np.isinf(total_return):
+        total_return = 0.0
+
+    if final_equity > 0 and capital > 0 and years > 0:
+        try:
+            cagr = float((final_equity / capital) ** (1.0 / years) - 1.0)
+            if np.isnan(cagr) or np.isinf(cagr):
+                cagr = total_return
+        except (OverflowError, ZeroDivisionError, ValueError):
+            cagr = total_return
+    else:
+        cagr = -1.0 if capital > 0 else 0.0
+
+    if np.isnan(cagr) or np.isinf(cagr):
+        cagr = 0.0
+
+    buy_hold = 0.0
+    if "Close" in curve.columns:
+        valid_close = curve["Close"].dropna()
+        if len(valid_close) > 0:
+            c0 = float(valid_close.iloc[0])
+            c1 = float(valid_close.iloc[-1])
+            if c0 > 0 and not np.isnan(c0) and not np.isinf(c0) and not np.isnan(c1) and not np.isinf(c1):
+                bh = c1 / c0 - 1.0
+                if not np.isnan(bh) and not np.isinf(bh):
+                    buy_hold = float(bh)
+
+    win_rate = None
+    if n_trades > 0:
+        wr = wins / n_trades
+        if not np.isnan(wr) and not np.isinf(wr):
+            win_rate = float(wr)
+
     return {
-        "start": str(curve.index[0].date()),
-        "end": str(curve.index[-1].date()),
+        "start": start_date,
+        "end": end_date,
         "final_equity": round(final_equity, 2),
-        "total_return": final_equity / capital - 1,
-        "cagr": (final_equity / capital) ** (1 / years) - 1,
-        "max_drawdown": max_drawdown(equity),
-        "buy_hold": float(curve["Close"].iloc[-1] / curve["Close"].iloc[0] - 1),
+        "total_return": total_return,
+        "cagr": cagr,
+        "max_drawdown": max_drawdown(equity if not equity.empty else curve.get("equity", pd.Series([capital]))),
+        "buy_hold": buy_hold,
         "trades": n_trades,
         "wins": wins,
-        "win_rate": wins / n_trades if n_trades else None,
+        "win_rate": win_rate,
         "costs_total": round(costs, 2),
     }

@@ -7,6 +7,7 @@ OUTPUT_DIR = BASE_DIR / "output"
 
 # ---- Strategy ----
 SYMBOL = "SPY"
+WATCHLIST = [s.strip().upper() for s in os.getenv("WATCHLIST", "SPY,QQQ,AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA").split(",") if s.strip()]
 SMA_FAST = 10
 SMA_SLOW = 50
 QUANTITY = 10            # shares bought/sold per trade
@@ -22,7 +23,27 @@ ALPACA_BARS_LIMIT = 300  # enough history to warm up the slow SMA
 
 # ---- Local LLM advisor (LM Studio) ----
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "")  # empty = auto-pick a chat model from LM Studio
+# Code default when LLM_MODEL is unset/blank in .env. Override via .env; use "auto" to auto-pick.
+LLM_MODEL_DEFAULT = "prism-ml/bonsai-27b"
+
+
+def resolve_llm_model_setting() -> tuple[str, bool]:
+    """Return (model_name, auto_pick). Reads LLM_MODEL from the environment each call."""
+    raw = os.getenv("LLM_MODEL")
+    if raw is None:
+        return LLM_MODEL_DEFAULT, False
+    stripped = raw.strip()
+    if not stripped:
+        return LLM_MODEL_DEFAULT, False
+    if stripped.lower() == "auto":
+        return "", True
+    return stripped, False
+
+# ---- Telegram notifications (optional) ----
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+TELEGRAM_HEARTBEAT_HOURS = 6  # periodic "bot alive" message interval
 
 LOG_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)

@@ -16,19 +16,19 @@ from strategy import compute_signals as _sma_signals
 
 
 def _factory(fn):
-    """Wrap a (df, params) signal function as a params->fn closure for the registry."""
-    def build(params: dict):
-        return lambda df: fn(df, params)
+    """Wrap a (df, params, allow_short) signal function as a (params, allow_short)->fn closure for the registry."""
+    def build(params: dict, allow_short: bool = False):
+        return lambda df: fn(df, params, allow_short=allow_short)
 
     return build
 
 
-def vwap_reversion_signals(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+def vwap_reversion_signals(df: pd.DataFrame, params: dict, allow_short: bool = True) -> pd.DataFrame:
     """Mean reversion to the session VWAP.
 
     Long when close is >= deviation_pct below the VWAP, exit when it
-    recovers to within exit_pct. Short the mirror image. VWAP resets
-    every session; nothing trades overnight (engine flattens).
+    recovers to within exit_pct. Short the mirror image when allow_short=True.
+    VWAP resets every session; nothing trades overnight (engine flattens).
     """
     deviation = float(params["deviation_pct"]) / 100
     exit_pct = float(params["exit_pct"]) / 100
@@ -37,8 +37,10 @@ def vwap_reversion_signals(df: pd.DataFrame, params: dict) -> pd.DataFrame:
 
     for _, g in df.groupby(df.index.date):
         tp = (g["High"] + g["Low"] + g["Close"]) / 3 * g["Volume"]
-        tp = tp.replace(0, np.nan)
-        vwap = (tp.cumsum() / g["Volume"].cumsum())
+        vol_cum = g["Volume"].cumsum()
+        tp_cum = tp.cumsum()
+        vwap = tp_cum / vol_cum.replace(0, np.nan)
+        vwap = vwap.ffill().bfill().fillna(g["Close"])
         dev = (g["Close"] - vwap) / vwap
 
         state = 0  # 0 flat, 1 long, -1 short
@@ -47,21 +49,21 @@ def vwap_reversion_signals(df: pd.DataFrame, params: dict) -> pd.DataFrame:
                 if dev.at[i] <= -deviation:
                     df.at[i, "signal"] = 1
                     state = 1
-                elif dev.at[i] >= deviation:
+                elif dev.at[i] >= deviation and allow_short:
                     df.at[i, "signal"] = -1
                     state = -1
             elif state == 1:
                 if dev.at[i] >= -exit_pct:
                     df.at[i, "signal"] = -1
                     state = 0
-            else:
+            elif state == -1:
                 if dev.at[i] <= exit_pct:
                     df.at[i, "signal"] = 1
                     state = 0
     return df
 
 
-def opening_range_breakout_signals(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+def opening_range_breakout_signals(df: pd.DataFrame, params: dict, allow_short: bool = True) -> pd.DataFrame:
     """Trade the first range_minutes of each session.
 
     Buy when close breaks above the opening range high, sell when it
@@ -99,25 +101,25 @@ def opening_range_breakout_signals(df: pd.DataFrame, params: dict) -> pd.DataFra
                 if close > range_high:
                     df.at[i, "signal"] = 1
                     state, entry = 1, close
-                elif close < range_low:
+                elif close < range_low and allow_short:
                     df.at[i, "signal"] = -1
                     state, entry = -1, close
             elif state == 1:
                 if close >= entry + width * tp_mult or close <= entry - width * sl_mult:
                     df.at[i, "signal"] = -1
                     state, entry = 0, None
-            else:
+            elif state == -1:
                 if close <= entry - width * tp_mult or close >= entry + width * sl_mult:
                     df.at[i, "signal"] = 1
                     state, entry = 0, None
     return df
 
 
-def rsi_mean_reversion_signals(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+def rsi_mean_reversion_signals(df: pd.DataFrame, params: dict, allow_short: bool = True) -> pd.DataFrame:
     """RSI mean reversion.
 
     Long when RSI drops below oversold, exit when it crosses exit_level.
-    Short when RSI tops overbought, cover when it falls to exit_level.
+    Short when RSI tops overbought (if allow_short=True), cover when it falls to exit_level.
     """
     period = int(params["rsi_period"])
     oversold = float(params["oversold"])
@@ -127,10 +129,16 @@ def rsi_mean_reversion_signals(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     delta = df["Close"].diff()
     up = delta.clip(lower=0)
     down = -delta.clip(upper=0)
-    rs = up.ewm(alpha=1 / period, adjust=False).mean() / down.ewm(
-        alpha=1 / period, adjust=False
-    ).mean()
-    rsi = 100 - 100 / (1 + rs)
+    roll_up = up.ewm(alpha=1 / period, adjust=False).mean()
+    roll_down = down.ewm(alpha=1 / period, adjust=False).mean()
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rs = roll_up / roll_down
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+
+    rsi = rsi.where(roll_down > 0, 100.0)
+    rsi = rsi.where(roll_up > 0, 0.0)
+    rsi = rsi.where((roll_up > 0) | (roll_down > 0), 50.0)
 
     df = df.copy()
     df["signal"] = 0
@@ -143,7 +151,7 @@ def rsi_mean_reversion_signals(df: pd.DataFrame, params: dict) -> pd.DataFrame:
             if r < oversold:
                 df.at[i, "signal"] = 1
                 state = 1
-            elif r > overbought:
+            elif r > overbought and allow_short:
                 df.at[i, "signal"] = -1
                 state = -1
         elif state == 1 and r > exit_level:
@@ -155,7 +163,7 @@ def rsi_mean_reversion_signals(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     return df
 
 
-def _make_sma(params: dict):
+def _make_sma(params: dict, allow_short: bool = False):
     def fn(df: pd.DataFrame) -> pd.DataFrame:
         return _sma_signals(df, int(params["fast"]), int(params["slow"]))
 
@@ -222,9 +230,9 @@ STRATEGIES: dict[str, dict] = {
 }
 
 
-def run_strategy(strategy_id: str, df: pd.DataFrame, params: dict) -> pd.DataFrame:
+def run_strategy(strategy_id: str, df: pd.DataFrame, params: dict, allow_short: bool = False) -> pd.DataFrame:
     spec = STRATEGIES[strategy_id]
-    return spec["run"](params)(df)
+    return spec["run"](params, allow_short=allow_short)(df)
 
 
 def parse_params(spec: dict, raw) -> dict:

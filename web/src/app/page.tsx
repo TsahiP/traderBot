@@ -1,6 +1,7 @@
 "use client";
 
-import { FlaskConical, LayoutDashboard } from "lucide-react";
+import { useState } from "react";
+import { Bitcoin, FlaskConical, LayoutDashboard, LineChart, Search, Sparkles } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,6 +13,8 @@ import { LabForm } from "@/components/lab-form";
 import { LabChart } from "@/components/charts/lab-chart";
 import { LabResults, RunError } from "@/components/lab-results";
 import { Spinner } from "@/components/ui/spinner";
+import { StockScanner } from "@/components/scanner/stock-scanner";
+import { CryptoMonitor } from "@/components/scanner/crypto-monitor";
 import { useLive, useStats, useTrades, useEquity } from "@/hooks/use-api";
 import { useBacktestRun } from "@/hooks/use-backtest-run";
 
@@ -21,6 +24,8 @@ export default function Home() {
   const { data: trades } = useTrades();
   const { data: equity } = useEquity();
   const { run, params, data: runData, error, isLoading, isValidating } = useBacktestRun();
+
+  const [scannerSubTab, setScannerSubTab] = useState<"stocks" | "crypto">("stocks");
 
   return (
     <div className="flex min-h-svh flex-col">
@@ -32,6 +37,10 @@ export default function Home() {
             <TabsTrigger value="dashboard" className="gap-1.5">
               <LayoutDashboard data-icon="inline-start" />
               Dashboard
+            </TabsTrigger>
+            <TabsTrigger value="scanner" className="gap-1.5">
+              <Search data-icon="inline-start" />
+              Market Scanner
             </TabsTrigger>
             <TabsTrigger value="lab" className="gap-1.5">
               <FlaskConical data-icon="inline-start" />
@@ -67,6 +76,38 @@ export default function Home() {
                 <TradeLedger trades={trades?.trades} />
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="scanner" className="flex flex-col gap-4">
+            <div className="flex items-center gap-2 border-b pb-3">
+              <button
+                type="button"
+                onClick={() => setScannerSubTab("stocks")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  scannerSubTab === "stocks"
+                    ? "bg-primary text-primary-foreground font-semibold shadow-sm"
+                    : "bg-muted/50 hover:bg-muted text-muted-foreground"
+                }`}
+              >
+                <LineChart className="h-4 w-4" />
+                8-Dimension Stock Screener
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setScannerSubTab("crypto")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  scannerSubTab === "crypto"
+                    ? "bg-primary text-primary-foreground font-semibold shadow-sm"
+                    : "bg-muted/50 hover:bg-muted text-muted-foreground"
+                }`}
+              >
+                <Bitcoin className="h-4 w-4 text-amber-500" />
+                Top-20 Crypto Matrix
+              </button>
+            </div>
+
+            {scannerSubTab === "stocks" ? <StockScanner /> : <CryptoMonitor />}
           </TabsContent>
 
           <TabsContent value="lab" className="flex flex-col gap-4">

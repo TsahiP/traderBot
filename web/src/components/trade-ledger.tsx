@@ -40,6 +40,7 @@ export function TradeLedger({
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-20">Symbol</TableHead>
           <TableHead>Closed</TableHead>
           <TableHead>Opened</TableHead>
           <TableHead className="text-right">Buy</TableHead>
@@ -52,14 +53,14 @@ export function TradeLedger({
       <TableBody>
         {loading && !trades?.length ? (
           <TableRow>
-            <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+            <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
               <Loader2 className="mx-auto size-4 animate-spin" />
             </TableCell>
           </TableRow>
         ) : !trades?.length ? (
           <TableRow>
             <TableCell
-              colSpan={7}
+              colSpan={8}
               className="h-24 text-center text-muted-foreground"
             >
               No trades recorded yet. Backtest results appear here after running
@@ -69,6 +70,9 @@ export function TradeLedger({
         ) : (
           trades.map((t, i) => (
             <TableRow key={`${t.exit_date}-${i}`}>
+              <TableCell className="font-mono font-bold text-xs">
+                {t.symbol ?? "SPY"}
+              </TableCell>
               <TableCell className="tabular-nums">{t.exit_date}</TableCell>
               <TableCell className="tabular-nums text-muted-foreground">
                 {t.entry_date}

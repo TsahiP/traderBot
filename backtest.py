@@ -19,6 +19,10 @@ def download_data() -> pd.DataFrame:
     )
     if df.empty:
         sys.exit("No data downloaded - check your internet connection.")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    df = df[(df["Open"] > 0) & (df["High"] > 0) & (df["Low"] > 0) & (df["Close"] > 0)]
+    if df.empty:
+        sys.exit("No valid price data downloaded.")
     return df
 
 
