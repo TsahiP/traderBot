@@ -182,6 +182,58 @@ export type AnalysisResponse = z.infer<typeof AnalysisResponse>;
 export const ApiError = z.object({ error: z.string() });
 export type ApiError = z.infer<typeof ApiError>;
 
+// ---- Signal bot (candlestick patterns -> Telegram) ----
+
+export const SignalPattern = z.object({
+  id: z.string(),
+  label: z.string(),
+  direction: z.enum(["long", "short"]),
+  bars: z.number().int(),
+});
+export type SignalPattern = z.infer<typeof SignalPattern>;
+
+export const SignalsConfig = z.object({
+  symbols: z.array(z.string()),
+  timeframes: z.array(z.string()),
+  patterns: z.array(z.string()),
+  poll_minutes: z.number().int(),
+});
+export type SignalsConfig = z.infer<typeof SignalsConfig>;
+
+export const SignalsConfigResponse = z.object({
+  config: SignalsConfig,
+  patterns: z.array(SignalPattern),
+  telegram_configured: z.boolean(),
+});
+export type SignalsConfigResponse = z.infer<typeof SignalsConfigResponse>;
+
+export const SignalsStatus = z.object({
+  running: z.boolean(),
+  last_check: z.string().nullable(),
+  heartbeat_age_s: z.number().nullable(),
+  poll_minutes: z.number().int().nullable(),
+});
+export type SignalsStatus = z.infer<typeof SignalsStatus>;
+
+export const SignalEntry = z.object({
+  key: z.string(),
+  ts: z.string(),
+  symbol: z.string(),
+  timeframe: z.string(),
+  pattern_id: z.string(),
+  label: z.string(),
+  direction: z.enum(["long", "short"]),
+  close: z.number(),
+  entry: z.number(),
+  stop: z.number().nullable(),
+  target: z.number().nullable(),
+  bar_ts: z.string(),
+});
+export type SignalEntry = z.infer<typeof SignalEntry>;
+
+export const SignalsHistoryResponse = z.object({ signals: z.array(SignalEntry) });
+export type SignalsHistoryResponse = z.infer<typeof SignalsHistoryResponse>;
+
 // ---- Backtest lab form schema ----
 
 export const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "1d"] as const;

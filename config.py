@@ -24,5 +24,11 @@ ALPACA_BARS_LIMIT = 300  # enough history to warm up the slow SMA
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "")  # empty = auto-pick a chat model from LM Studio
 
+# ---- Signal bot (candlestick patterns -> Telegram) ----
+SIGNAL_CONFIG_PATH = OUTPUT_DIR / "signal_config.json"
+SIGNAL_LOG_PATH = OUTPUT_DIR / "signal_log.json"
+SIGNAL_HEARTBEAT_PATH = OUTPUT_DIR / "signal_heartbeat.json"
+SIGNAL_MAX_LOG = 1000          # sent alerts kept in the log (also dedupe source)
+
 LOG_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)

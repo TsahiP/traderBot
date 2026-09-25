@@ -6,6 +6,7 @@ The Next.js frontend (web/) proxies /api/* to this server (port 8000).
 """
 import json
 import os
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -17,7 +18,9 @@ from flask import Flask, jsonify, request
 
 import config
 import engine
+import signals
 import strategies
+from candle_patterns import PATTERNS as SIGNAL_PATTERNS
 from livebot import get_last_completed_bars
 from strategy import compute_signals, latest_signal
 
@@ -300,6 +303,25 @@ def api_strategies():
     ])
 
 
+def fetch_history(symbol: str, kwargs: dict) -> pd.DataFrame:
+    """Fetch OHLCV history with a short retry.
+
+    Yahoo/yfinance occasionally returns an empty frame on a transient blip
+    (rate limit, cold cookie/crumb). Retry a couple of times before giving up
+    so a valid ticker doesn't surface as a false 404.
+    """
+    import yfinance as yf
+
+    last_df = pd.DataFrame()
+    for _ in range(3):
+        df = yf.Ticker(symbol).history(**kwargs)
+        last_df = df
+        if not df.empty:
+            return df
+        time.sleep(0.8)
+    return last_df
+
+
 def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
     """Parse a run request (query params or JSON body) and execute it.
 
@@ -345,8 +367,6 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
     ):
         return None, 400, "Need oversold < exit level < overbought"
 
-    import yfinance as yf
-
     try:
         start_d = parse_date(raw.get("start"), "start date")
         end_d = parse_date(raw.get("end"), "end date")
@@ -357,7 +377,7 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
 
     kwargs: dict = {"auto_adjust": True, "actions": False}
     if timeframe == "1d":
-        kwargs["start"] = (start_d or config.BACKTEST_START).isoformat()
+        kwargs["start"] = (start_d or date.fromisoformat(config.BACKTEST_START)).isoformat()
         if end_d:
             kwargs["end"] = (end_d + timedelta(days=1)).isoformat()
     else:
@@ -371,9 +391,12 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         if end_d:
             kwargs["end"] = (min(end_d, now.date()) + timedelta(days=1)).isoformat()
 
-    df = yf.Ticker(symbol).history(**kwargs)
+    df = fetch_history(symbol, kwargs)
     if df.empty:
-        return None, 404, f"No data for '{symbol}' - check the ticker symbol"
+        return None, 404, (
+            f"No data for '{symbol}' - check the ticker symbol and date range "
+            f"(intraday history is limited: 1m~7d, 5m-30m~60d, 1h~730d)"
+        )
 
     flat_eod = spec["flat_eod"] and timeframe != "1d"
     curve, trades_df = engine.run_backtest(
@@ -572,6 +595,72 @@ def api_analyze():
             503,
         )
     return jsonify({"model": model, "analysis": analysis})
+
+
+# ---- Signal bot (candlestick patterns -> Telegram) ----
+
+@app.route("/api/signals/config")
+def api_signals_config():
+    token, _ = signals.telegram_credentials()
+    return jsonify({
+        "config": signals.load_config(),
+        "patterns": [
+            {"id": pid, **meta} for pid, meta in SIGNAL_PATTERNS.items()
+        ],
+        "telegram_configured": bool(token and signals.telegram_chat_ids()),
+    })
+
+
+@app.route("/api/signals/config", methods=["POST"])
+def api_signals_config_save():
+    body = request.get_json(silent=True) or {}
+    try:
+        cfg = signals.save_config(body)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(cfg)
+
+
+@app.route("/api/signals/status")
+def api_signals_status():
+    hb = signals.read_heartbeat()
+    running, last_check, age_s, poll_minutes = False, None, None, None
+    if hb:
+        try:
+            ts = datetime.fromisoformat(hb["ts"])
+            age_s = max(0.0, (datetime.now(ts.tzinfo) - ts).total_seconds())
+            poll_minutes = int(hb.get("poll_minutes", 5))
+            last_check = hb["ts"]
+            running = age_s < poll_minutes * 60 + 90
+        except (ValueError, TypeError):
+            pass
+    return jsonify({
+        "running": running,
+        "last_check": last_check,
+        "heartbeat_age_s": age_s,
+        "poll_minutes": poll_minutes,
+    })
+
+
+@app.route("/api/signals/history")
+def api_signals_history():
+    try:
+        limit = min(max(int(request.args.get("limit", 50)), 1), 200)
+    except ValueError:
+        limit = 50
+    return jsonify({"signals": signals.read_signals(limit)})
+
+
+@app.route("/api/signals/test", methods=["POST"])
+def api_signals_test():
+    token, _ = signals.telegram_credentials()
+    chat_ids = signals.telegram_chat_ids()
+    if not (token and chat_ids):
+        return jsonify({"error": "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in .env"}), 400
+    ok = signals.tg_send(token, chat_ids, text="tradebot signal test - Telegram is wired up")
+    if not ok:
+        return jsonify({"error": "Telegram rejected the message - check token/chat id and network"}), 502
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

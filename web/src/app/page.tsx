@@ -1,9 +1,10 @@
 "use client";
 
-import { FlaskConical, LayoutDashboard } from "lucide-react";
+import { FlaskConical, LayoutDashboard, Radar } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { SignalsPanel } from "@/components/signals-panel";
 import { TickerTape } from "@/components/ticker-tape";
 import { StatCards } from "@/components/stat-cards";
 import { EquityChart } from "@/components/charts/equity-chart";
@@ -36,6 +37,10 @@ export default function Home() {
             <TabsTrigger value="lab" className="gap-1.5">
               <FlaskConical data-icon="inline-start" />
               Backtest lab
+            </TabsTrigger>
+            <TabsTrigger value="signals" className="gap-1.5">
+              <Radar data-icon="inline-start" />
+              Signals
             </TabsTrigger>
           </TabsList>
 
@@ -140,6 +145,10 @@ export default function Home() {
                 )}
               </div>
             </div>
+          </TabsContent>
+
+          <TabsContent value="signals" className="flex flex-col gap-4">
+            <SignalsPanel />
           </TabsContent>
         </Tabs>
       </main>

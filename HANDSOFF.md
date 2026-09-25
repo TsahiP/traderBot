@@ -14,6 +14,7 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
 | Backend API | Python 3.12 · Flask | `dashboard.py`, port `8000`, API-only |
 | Strategy/engine | pandas | `strategies.py` (registry) + `engine.py` — single source of truth |
 | Live trading | alpaca-py (paper) | `livebot.py` |
+| Signal alerts | yfinance polling + matplotlib | `signalbot.py` — candlestick patterns → Telegram text + chart image |
 | Historical data | yfinance | backtests, on-demand downloads |
 | Local LLM advisor | LM Studio (OpenAI-compatible) | `/api/analyze` re-runs a backtest and has the local model critique it |
 | Frontend | Next.js 16 (App Router) · TypeScript · Tailwind v4 | `web/`, port `3000` |
@@ -41,10 +42,14 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
               livebot.py │       │ yfinance (on-demand)
               (Alpaca     │       │  daily: BACKTEST_START→now
                paper)     │       │  intraday: period-capped (7d/60d/730d)
-                         │       ▼
-                         ▼    output/data_*.csv (CLI only)
-                  output/live_trades.csv
-```
+                          │       ▼
+                          ▼    output/data_*.csv (CLI only)
+                   output/live_trades.csv
+
+ signalbot.py ── yfinance poll (per cycle, config re-read each time)
+   candle_patterns.detect_all() on last closed bar → Telegram text + PNG chart
+   state: output/signal_config.json · signal_log.json (dedupe) · signal_heartbeat.json
+ ```
 
 - **CLI** (`backtest.py`) and **API** (`/api/backtest/run`) call the *same*
   `engine.run_backtest()` — backtests are reproducible and identical.
@@ -77,21 +82,26 @@ tradebot/
 ├── engine.py          # run_backtest() (shorts, EOD, costs), compute_metrics() — shared by CLI + API
 ├── backtest.py        # CLI: downloads data, runs engine, writes output/*.csv, prints report
 ├── livebot.py         # paper bot loop: market clock, daily bars, market orders, logs trades
+├── signalbot.py       # signal bot loop: poll yfinance per config, detect patterns, alert Telegram (text + chart PNG)
+├── candle_patterns.py # 6 strong Japanese-candlestick detectors + PATTERNS registry {id: label/direction/bars}
+├── signals.py         # shared state for the Signals feature: config load/save/validate, signal log + dedupe keys, heartbeat, Telegram send (text/photo)
+├── chart_image.py     # render_candles() — dark-theme matplotlib PNG of recent bars with the alert bar highlighted
 ├── dashboard.py       # Flask API (see §7 for endpoints)
 ├── start-web.ps1      # launches API + frontend + browser
 ├── requirements.txt
 ├── README.md          # user-facing setup
-├── output/            # trades.csv, equity_curve.csv, data_<SYMBOL>.csv, live_trades.csv
+├── output/            # trades.csv, equity_curve.csv, data_<SYMBOL>.csv, live_trades.csv, signal_config.json, signal_log.json, signal_heartbeat.json
 ├── logs/bot.log       # livebot rotating log (1 MB × 3)
+├── logs/signalbot.log # signal bot: one line per cycle + every SIGNAL sent
 └── web/               # Next.js app
     ├── next.config.ts # API proxy rewrites
     └── src/
-        ├── app/       # layout (dark, fonts, Toaster), page.tsx (Dashboard | Lab tabs)
+        ├── app/       # layout (dark, fonts, Toaster), page.tsx (Dashboard | Lab | Signals tabs)
         ├── components/
         │   ├── charts/       # chart-theme.ts, equity-chart.tsx, lab-chart.tsx
         │   ├── ui/           # shadcn components (nova)
-        │   └── *.tsx         # ticker-tape, stat-cards, trade-ledger, lab-form, lab-results, metrics-strip
-        ├── hooks/            # use-api.ts (useLive/Stats/Trades/Equity/Strategies), use-backtest-run.ts
+        │   └── *.tsx         # ticker-tape, stat-cards, trade-ledger, lab-form, lab-results, metrics-strip, signals-panel
+        ├── hooks/            # use-api.ts (useLive/Stats/Trades/Equity/Strategies), use-backtest-run.ts, use-signals.ts
         └── lib/              # api.ts (typed fetcher), schemas.ts (zod), format.ts (Intl), utils.ts
 ```
 
@@ -121,6 +131,10 @@ tradebot/
 | `output/data_<SYM>.csv` | `backtest.py` | raw OHLCV bars used by the run |
 | `output/live_trades.csv` | `livebot.py` | paper round trips appended live (dashboard "LIVE" rows) |
 | `logs/bot.log` | `livebot.py` | every signal/order/fill |
+| `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | watchlist: symbols, timeframes, pattern ids, poll_minutes — re-read by `signalbot.py` every cycle; delete to reset to defaults (SPY, 1d, all patterns) |
+| `output/signal_log.json` | `signalbot.py` | every sent alert incl. its dedupe key (`SYMBOL\|tf\|bar_ts\|pattern`) — retried on Telegram failure until it lands; capped at 1000 entries |
+| `output/signal_heartbeat.json` | `signalbot.py` | `{ts, poll_minutes}` of the last cycle start — `/api/signals/status` derives "running" from its age (< poll + 90 s) |
+| `logs/signalbot.log` | `signalbot.py` | one line per cycle + every SIGNAL sent |
 
 Note: the equity CSV has **tz-aware timestamps** (`-05:00`); `dashboard.py`
 parses them with `pd.to_datetime(..., utc=True).tz_convert(None)` — keep that
@@ -137,6 +151,11 @@ if you regenerate the file differently.
 | `GET /api/strategies` | — | registry `[{id, label, description, timeframes[], flat_eod, default_allow_short, default_timeframe, params[{key,label,min,max,step,default,int?,unit?}]}]` — drives the lab form |
 | `GET /api/backtest/run` | `symbol` (def SPY) `strategy` (def sma_crossover) `timeframe` (def 1d) `start` `end` (optional `YYYY-MM-DD`, inclusive; intraday requests clamped to the data window) `qty` `capital` `allow_short` (`true`/`false`) `cost_per_share` + per-strategy params (`fast`,`slow`,`deviation_pct`,`exit_pct`,`range_minutes`,`tp_mult`,`sl_mult`,`max_range_pct`,`rsi_period`,`oversold`,`overbought`,`exit_level`) | `{meta, metrics{...costs_total}, series{OHLCV+smas+equity ≤800 bars}, markers[{index, date, side: buy\|sell, eod?, price}], trades[{..., side, exit_type: signal\|eod, costs}]}` |
 | `POST /api/analyze` | JSON body = same params as `/api/backtest/run` | re-runs the backtest, digests results + allowed param ranges, and returns `{model, analysis}` from the local LLM (`503` when LM Studio is unreachable) |
+| `GET /api/signals/config` | — | `{config: {symbols[], timeframes[], patterns[], poll_minutes}, patterns: [{id, label, direction, bars}], telegram_configured}` |
+| `POST /api/signals/config` | JSON body = same shape as `config` (symbols uppercased/deduped server-side) | validates against known timeframes (`1m 5m 15m 30m 1h 1d`) and pattern ids, writes `output/signal_config.json`, returns the saved config; `400` with a message on bad input |
+| `GET /api/signals/status` | — | `{running, last_check?, heartbeat_age_s?, poll_minutes?}` from the heartbeat file |
+| `GET /api/signals/history` | `limit` (def 50) | `{signals: [...]}` newest first — every alert ever sent (key, ts, symbol, timeframe, pattern_id, label, direction, close/entry/stop/target, bar_ts) |
+| `POST /api/signals/test` | — | sends a plain "test" message to Telegram so you can verify the keys; `{ok}` or `502` with the API error |
 
 Data windows per timeframe: `1d` → `BACKTEST_START` (2009); `1m` → 7 days;
 `5m`/`15m`/`30m` → 60 days; `1h` → 730 days (yfinance caps). Intraday
@@ -156,7 +175,9 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   (conditional SWR key incl. strategy/timeframe/costs params; a new run
   clears the previous chart immediately — no `keepPreviousData` —
   `run(LabValues)`), `useLlmAnalysis` (POST `/api/analyze` with the run
-  params, returns `{model, analysis}`).
+  params, returns `{model, analysis}`), `useSignalsConfig` (fetched once; the
+  form remounts via a config-derived key after save — no setState-in-effect),
+  `useSignalsStatus/useSignalsHistory` (30 s polling).
 - **Validation:** `LabSchema` (zod) — `z.discriminatedUnion("strategy", [...])`
   with a `superRefine` for cross-field rules (fast<slow, exit<deviation,
   oversold<exit<overbought); coerce numbers; RHF typed as
@@ -242,3 +263,23 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
 - Full stack smoke-tested: page 200, `/api/strategies`, `/api/live`,
   `/api/backtest/run` 200 via the Next proxy.
 - `npm run lint` (1 benign React-Compiler/RHF `watch` warning), `npm run build` green.
+
+## 13. Signals feature (candlestick pattern alerts) — last verified 2026-09-10
+
+- **Patterns** (`candle_patterns.py`, all must complete on the *last closed* bar):
+  bullish/bearish engulfing, morning/evening star, three white soldiers /
+  black crows. Rules are strict (solid bars = body ≥ 50% of range; stars need a
+  ≤ half-body doji-ish middle candle whose center is past the first bar's
+  midpoint and a third bar closing beyond it). Unit-tested on synthetic OHLCV:
+  12 positive/negative cases + multi-pattern detection, all passing.
+- **Alert flow:** `signalbot.py` polls yfinance per config (in-progress bar
+  dropped), detects patterns, computes entry = close, stop = extreme of the
+  whole pattern window, target = 2× risk (R:R 1:2), then sends Telegram text +
+  a matplotlib PNG (`chart_image.py`, last ~30 bars, alert bar highlighted).
+  Dedupe key `SYMBOL|tf|bar_ts|pattern` is logged only after a successful send,
+  so a failed Telegram call retries next cycle.
+- **Verified end-to-end:** all five `/api/signals/*` endpoints (incl. 400 on bad
+  timeframe), test message delivered to Telegram, and one real alert — TSLA 15m
+  bearish engulfing on the last closed bar — sent with chart image and shown in
+  the UI history table. `signalbot.py` runs its cycle loop (one log line per
+  cycle) and re-reads config each cycle, so Signals-tab edits apply live.
