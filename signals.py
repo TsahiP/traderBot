@@ -5,9 +5,10 @@ import from here so they never disagree about where things live.
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import config
 from candle_patterns import PATTERNS
@@ -35,6 +36,23 @@ DISCORD_ROUTE_ENV: dict[DiscordRoute, str] = {
     "week": "DISCORD_WEBHOOK_WEEK_TRADE",
 }
 
+TIMEFRAME_DISCORD_ROUTE: dict[str, DiscordRoute] = {
+    "1m": "minute",
+    "5m": "minute",
+    "15m": "minute",
+    "30m": "minute",
+    "1h": "hour",
+    "1d": "day",
+    "1w": "week",
+}
+DISCORD_TIMEFRAME_ORDER: tuple[str, ...] = ("1m", "5m", "15m", "30m", "1h", "1d", "1w")
+
+NY = ZoneInfo("America/New_York")
+BAR_CLOSE_OFFSET_SECONDS = 45
+SIGNAL_WAKE_CAP_SECONDS = 15
+SIGNAL_HEARTBEAT_STALE_SECONDS = 120
+_SCHEDULER_TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
+
 
 def _default_list() -> dict:
     return {
@@ -48,7 +66,7 @@ def _default_list() -> dict:
 
 
 def default_config() -> dict:
-    return {"poll_minutes": 5, "lists": [_default_list()]}
+    return {"lists": [_default_list()]}
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -107,17 +125,82 @@ def watchlist_scan_timeframes(watchlist: dict) -> list[str]:
     return tfs
 
 
-def _clean_discord_route(raw) -> str | None:
-    if raw is None:
-        return None
-    if isinstance(raw, str) and not raw.strip():
-        return None
-    route = str(raw).strip().lower()
-    if route == "weak":
-        route = "week"
-    if route not in DISCORD_ROUTES:
-        raise ValueError(f"discord_route must be one of {', '.join(DISCORD_ROUTES)} or null")
-    return route
+def discord_route_for_timeframe(timeframe: str) -> DiscordRoute | None:
+    return TIMEFRAME_DISCORD_ROUTE.get(timeframe)
+
+
+def discord_timeframes_available() -> list[str]:
+    out: list[str] = []
+    for tf in DISCORD_TIMEFRAME_ORDER:
+        route = discord_route_for_timeframe(tf)
+        if route and discord_webhook_url(route):
+            out.append(tf)
+    return out
+
+
+def expand_scan_jobs(cfg: dict) -> list[tuple[str, str, str, str]]:
+    """(list_id, list_name, symbol, timeframe) for each watchlist's own symbols + TFs."""
+    jobs: list[tuple[str, str, str, str]] = []
+    for watchlist in cfg.get("lists", []):
+        list_id = watchlist["id"]
+        list_name = watchlist["name"]
+        for symbol in watchlist["symbols"]:
+            for timeframe in watchlist_scan_timeframes(watchlist):
+                jobs.append((list_id, list_name, symbol, timeframe))
+    return jobs
+
+
+def next_run_after_timeframe(timeframe: str, after: datetime | None = None) -> datetime:
+    """Next check time: start of the next bar period in NY + close offset."""
+    now = after or datetime.now(NY)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=NY)
+    else:
+        now = now.astimezone(NY)
+    offset = timedelta(seconds=BAR_CLOSE_OFFSET_SECONDS)
+
+    if timeframe == "1w":
+        days_ahead = (7 - now.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        next_monday = (now + timedelta(days=days_ahead)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return next_monday + offset
+
+    if timeframe == "1d":
+        next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return next_day + offset
+
+    minutes = _SCHEDULER_TF_MINUTES.get(timeframe)
+    if minutes is None:
+        return now + timedelta(minutes=5)
+
+    if minutes >= 60:
+        boundary = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    else:
+        bucket_min = (now.minute // minutes) * minutes
+        boundary = now.replace(minute=bucket_min, second=0, microsecond=0) + timedelta(minutes=minutes)
+    return boundary + offset
+
+
+def _clean_discord_timeframes(tfs) -> list[str]:
+    if not isinstance(tfs, list):
+        raise ValueError("Discord timeframes must be a list")
+    if not tfs:
+        return []
+    cleaned = _clean_timeframes(
+        _coerce_discord_timeframe_list(tfs),
+        "Discord timeframe",
+        allowed=VALID_DISCORD_TIMEFRAMES,
+    )
+    available = set(discord_timeframes_available())
+    missing = [tf for tf in cleaned if tf not in available]
+    if missing:
+        raise ValueError(
+            f"Discord webhook not configured for timeframe(s): {', '.join(missing)}"
+        )
+    return cleaned
 
 
 def _clean_patterns(pats) -> list[str]:
@@ -144,7 +227,6 @@ def _slug_id(name: str, used: set[str]) -> str:
 def _migrate_flat(raw: dict) -> dict:
     """Old single-watchlist file -> one list named Default."""
     return {
-        "poll_minutes": raw.get("poll_minutes", 5),
         "lists": [{
             "id": "default",
             "name": "Default",
@@ -218,36 +300,21 @@ def validate_config(cfg) -> dict:
             symbols = _clean_symbols(item.get("symbols"))
             tg_raw, dc_raw = _resolve_channel_timeframes(item)
             telegram_timeframes = _clean_timeframes(tg_raw, "Telegram timeframe")
-            discord_timeframes = _clean_timeframes(
-                _coerce_discord_timeframe_list(dc_raw),
-                "Discord timeframe",
-                allowed=VALID_DISCORD_TIMEFRAMES,
-            )
+            discord_timeframes = _clean_discord_timeframes(dc_raw)
             patterns = _clean_patterns(item.get("patterns"))
-            discord_route = _clean_discord_route(item.get("discord_route"))
         except ValueError as exc:
             raise ValueError(f"{label}: {exc}") from exc
 
-        out_item = {
+        out_lists.append({
             "id": list_id,
             "name": name,
             "symbols": symbols,
             "telegram_timeframes": telegram_timeframes,
             "discord_timeframes": discord_timeframes,
             "patterns": patterns,
-        }
-        if discord_route is not None:
-            out_item["discord_route"] = discord_route
-        out_lists.append(out_item)
+        })
 
-    try:
-        poll = int(cfg.get("poll_minutes", 5))
-    except (TypeError, ValueError):
-        raise ValueError("Poll interval must be a whole number of minutes")
-    if not 1 <= poll <= 60:
-        raise ValueError("Poll interval must be 1-60 minutes")
-
-    return {"poll_minutes": poll, "lists": out_lists}
+    return {"lists": out_lists}
 
 
 def save_config(raw) -> dict:
@@ -259,8 +326,14 @@ def save_config(raw) -> dict:
 
 # ---- sent-signal log (also the dedupe source of truth) ----
 
-def signal_key(symbol: str, timeframe: str, bar_ts: str, pattern_id: str) -> str:
-    return f"{symbol}|{timeframe}|{bar_ts}|{pattern_id}"
+def signal_key(
+    list_id: str,
+    symbol: str,
+    timeframe: str,
+    bar_ts: str,
+    pattern_id: str,
+) -> str:
+    return f"{list_id}|{symbol}|{timeframe}|{bar_ts}|{pattern_id}"
 
 
 def read_signals(limit: int = 50) -> list[dict]:
@@ -299,8 +372,8 @@ def append_signal(entry: dict) -> None:
 
 # ---- heartbeat (how the API knows the bot is alive) ----
 
-def write_heartbeat(poll_minutes: int) -> None:
-    payload = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"), "poll_minutes": poll_minutes}
+def write_heartbeat() -> None:
+    payload = {"ts": datetime.now().astimezone().isoformat(timespec="seconds")}
     _atomic_write(config.SIGNAL_HEARTBEAT_PATH, json.dumps(payload))
 
 

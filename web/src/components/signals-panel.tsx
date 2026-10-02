@@ -50,14 +50,6 @@ import {
   type SignalsConfig,
   type WatchList,
 } from "@/lib/schemas";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-
 const SYMBOL_RE = /^[A-Za-z0-9.\-]{1,12}$/;
 
 function SymbolsField({ symbols, setSymbols }: {
@@ -144,14 +136,14 @@ function slugId(name: string, used: Set<string>): string {
   return id;
 }
 
-function SignalsFormCard({ config, patterns, onSaved }: {
+function SignalsFormCard({ config, patterns, discordAvailable, onSaved }: {
   config: SignalsConfig;
   patterns: SignalPattern[];
+  discordAvailable: string[];
   onSaved: () => void | Promise<unknown>;
 }) {
   const [lists, setLists] = useState<WatchList[]>(config.lists);
   const [selectedId, setSelectedId] = useState(config.lists[0]?.id ?? "");
-  const [pollMinutes, setPollMinutes] = useState(config.poll_minutes);
   const [newName, setNewName] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -175,7 +167,11 @@ function SignalsFormCard({ config, patterns, onSaved }: {
       name,
       symbols: ["SPY"],
       telegram_timeframes: ["1d"],
-      discord_timeframes: ["1d"],
+      discord_timeframes: discordAvailable.includes("1d")
+        ? ["1d"]
+        : discordAvailable.length
+          ? [discordAvailable[0]]
+          : [],
       patterns: patterns.map((p) => p.id),
     };
     setLists((prev) => [...prev, created]);
@@ -191,11 +187,8 @@ function SignalsFormCard({ config, patterns, onSaved }: {
   };
 
   const onSave = async () => {
-    if (pollMinutes < 1 || pollMinutes > 60) {
-      toast.error("Poll interval must be 1-60 minutes");
-      return;
-    }
     const names = new Set<string>();
+    const allowedDc = new Set(discordAvailable);
     for (const list of lists) {
       const key = list.name.trim().toLocaleLowerCase();
       if (!list.name.trim()) {
@@ -207,24 +200,25 @@ function SignalsFormCard({ config, patterns, onSaved }: {
         return;
       }
       names.add(key);
-      if (
-        !list.symbols.length ||
-        !list.telegram_timeframes.length ||
-        !list.discord_timeframes.length ||
-        !list.patterns.length
-      ) {
-        toast.error(`'${list.name}' needs symbols, Telegram/Discord timeframes, and patterns`);
+      const badDc = list.discord_timeframes.filter((tf) => !allowedDc.has(tf));
+      if (badDc.length) {
+        toast.error(
+          `'${list.name}': Discord webhook missing for ${badDc.join(", ")} — set .env or unselect`,
+        );
+        return;
+      }
+      if (!list.symbols.length || !list.telegram_timeframes.length || !list.patterns.length) {
+        toast.error(`'${list.name}' needs symbols, Telegram timeframes, and patterns`);
         return;
       }
     }
     setSaving(true);
     try {
       await saveSignalsConfig({
-        poll_minutes: pollMinutes,
-        lists: lists.map((l) => ({ ...l, name: l.name.trim() })),
+        lists: lists.map(({ discord_route: _r, ...l }) => ({ ...l, name: l.name.trim() })),
       });
       await onSaved();
-      toast.success("Saved - the bot picks it up on its next cycle");
+      toast.success("Saved — the bot picks it up on the next scheduler wake");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Save failed");
     } finally {
@@ -248,24 +242,11 @@ function SignalsFormCard({ config, patterns, onSaved }: {
       <CardHeader>
         <CardTitle className="text-sm">Signal watchlists</CardTitle>
         <CardDescription>
-          Each list has its own tickers, patterns, and per-channel timeframes. Telegram and Discord can watch different bars; Discord routing is optional per list.
+          Each list scans on its own schedule when a selected bar closes. Discord sends to the webhook for each timeframe (day / hour / minute / week).
         </CardDescription>
       </CardHeader>
       <CardContent>
         <FieldGroup>
-          <Field data-invalid={pollMinutes < 1 || pollMinutes > 60}>
-            <FieldLabel htmlFor="signal-poll">Poll interval (minutes)</FieldLabel>
-            <Input
-              id="signal-poll"
-              type="number"
-              min={1}
-              max={60}
-              value={pollMinutes}
-              onChange={(e) => setPollMinutes(Number(e.target.value))}
-              className="tabular-nums"
-            />
-          </Field>
-
           <Field>
             <FieldLabel>Watchlists</FieldLabel>
             <div className="flex flex-col gap-1">
@@ -331,32 +312,6 @@ function SignalsFormCard({ config, patterns, onSaved }: {
               />
 
               <Field>
-                <FieldLabel>Discord channel</FieldLabel>
-                <Select
-                  value={selected.discord_route ?? "none"}
-                  onValueChange={(v) =>
-                    patchSelected({
-                      discord_route: v === "none" ? null : (v as DiscordRoute),
-                    })
-                  }
-                >
-                  <SelectTrigger className="w-full" size="default">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="w-full">
-                    <SelectItem value="none">None</SelectItem>
-                    <SelectItem value="day">Day trade</SelectItem>
-                    <SelectItem value="hour">Hour trade</SelectItem>
-                    <SelectItem value="minute">Minute trade</SelectItem>
-                    <SelectItem value="week">Week trade</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Uses the matching webhook from <code className="font-mono">.env</code>
-                </p>
-              </Field>
-
-              <Field>
                 <FieldLabel>Telegram timeframes</FieldLabel>
                 <ToggleGroup
                   multiple
@@ -375,22 +330,28 @@ function SignalsFormCard({ config, patterns, onSaved }: {
 
               <Field>
                 <FieldLabel>Discord timeframes</FieldLabel>
-                <ToggleGroup
-                  multiple
-                  value={selected.discord_timeframes}
-                  onValueChange={(v) =>
-                    patchSelected({ discord_timeframes: [...(v as string[])] })
-                  }
-                >
-                  {TIMEFRAMES.map((tf) => (
-                    <ToggleGroupItem key={`dc-${tf}`} value={tf}>
-                      {tf}
-                    </ToggleGroupItem>
-                  ))}
-                  <ToggleGroupItem key="dc-1w" value="1w">
-                    1w
-                  </ToggleGroupItem>
-                </ToggleGroup>
+                {discordAvailable.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No Discord webhooks in <code className="font-mono">.env</code> — Telegram-only alerts.
+                  </p>
+                ) : (
+                  <ToggleGroup
+                    multiple
+                    value={selected.discord_timeframes.filter((tf) => discordAvailable.includes(tf))}
+                    onValueChange={(v) =>
+                      patchSelected({ discord_timeframes: [...(v as string[])] })
+                    }
+                  >
+                    {discordAvailable.map((tf) => (
+                      <ToggleGroupItem key={`dc-${tf}`} value={tf}>
+                        {tf}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  1d→day, 1h→hour, 1m/5m/15m/30m→minute, 1w→week webhook
+                </p>
               </Field>
 
               <Field>
@@ -484,6 +445,7 @@ export function SignalsPanel() {
           key={JSON.stringify(cfgData.config)}
           config={cfgData.config}
           patterns={cfgData.patterns}
+          discordAvailable={cfgData.discord_available_timeframes}
           onSaved={() => mutateConfig()}
         />
       ) : (
@@ -551,9 +513,17 @@ export function SignalsPanel() {
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Discord webhooks</CardTitle>
-            <CardDescription>Day / hour / minute / week channels — set per watchlist above</CardDescription>
+            <CardDescription>
+              Each Discord timeframe in a watchlist uses its matching webhook automatically.
+            </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
+            {cfgData?.discord_available_timeframes.length ? (
+              <p className="text-xs text-muted-foreground">
+                Available for signals:{" "}
+                <span className="font-mono">{cfgData.discord_available_timeframes.join(", ")}</span>
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               {DISCORD_TEST_ROUTES.map(({ route, label }) => {
                 const ok = cfgData?.discord_configured?.[route];

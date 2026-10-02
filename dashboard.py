@@ -609,6 +609,7 @@ def api_signals_config():
         ],
         "telegram_configured": bool(token and signals.telegram_chat_ids()),
         "discord_configured": signals.discord_configured(),
+        "discord_available_timeframes": signals.discord_timeframes_available(),
     })
 
 
@@ -625,21 +626,19 @@ def api_signals_config_save():
 @app.route("/api/signals/status")
 def api_signals_status():
     hb = signals.read_heartbeat()
-    running, last_check, age_s, poll_minutes = False, None, None, None
+    running, last_check, age_s = False, None, None
     if hb:
         try:
             ts = datetime.fromisoformat(hb["ts"])
             age_s = max(0.0, (datetime.now(ts.tzinfo) - ts).total_seconds())
-            poll_minutes = int(hb.get("poll_minutes", 5))
             last_check = hb["ts"]
-            running = age_s < poll_minutes * 60 + 90
+            running = age_s < signals.SIGNAL_HEARTBEAT_STALE_SECONDS
         except (ValueError, TypeError):
             pass
     return jsonify({
         "running": running,
         "last_check": last_check,
         "heartbeat_age_s": age_s,
-        "poll_minutes": poll_minutes,
     })
 
 

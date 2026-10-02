@@ -14,6 +14,14 @@ def _patch_path(monkeypatch, tmp_path):
     return path
 
 
+@pytest.fixture(autouse=True)
+def _discord_webhooks(monkeypatch):
+    monkeypatch.setenv("DISCORD_WEBHOOK_DAY_TRADE", "https://example.com/day")
+    monkeypatch.setenv("DISCORD_WEBHOOK_HOUR_TRADE", "https://example.com/hour")
+    monkeypatch.setenv("DISCORD_WEBHOOK_MINUTE_TRADE", "https://example.com/minute")
+    monkeypatch.setenv("DISCORD_WEBHOOK_WEEK_TRADE", "https://example.com/week")
+
+
 def _list(**overrides):
     item = {
         "id": "default",
@@ -29,7 +37,6 @@ def _list(**overrides):
 
 def test_validate_maps_crypto_spot_aliases():
     cfg = signals.validate_config({
-        "poll_minutes": 5,
         "lists": [_list(symbols=["btc", "ETH", "SPY"])],
     })
     assert cfg["lists"][0]["symbols"] == ["BTC-USD", "ETH-USD", "SPY"]
@@ -37,7 +44,6 @@ def test_validate_maps_crypto_spot_aliases():
 
 def test_validate_accepts_lists():
     cfg = signals.validate_config({
-        "poll_minutes": 5,
         "lists": [
             _list(),
             _list(
@@ -49,7 +55,6 @@ def test_validate_accepts_lists():
             ),
         ],
     })
-    assert cfg["poll_minutes"] == 5
     assert cfg["lists"][1]["symbols"] == ["AAPL", "MSFT"]
     assert cfg["lists"][1]["telegram_timeframes"] == ["1h", "1d"]
     assert cfg["lists"][1]["discord_timeframes"] == ["1d"]
@@ -57,7 +62,6 @@ def test_validate_accepts_lists():
 
 def test_validate_legacy_shared_timeframes():
     cfg = signals.validate_config({
-        "poll_minutes": 5,
         "lists": [{
             "id": "default",
             "name": "Default",
@@ -91,7 +95,7 @@ def test_load_migrates_flat_file(monkeypatch, tmp_path):
 
     cfg = signals.load_config()
 
-    assert cfg["poll_minutes"] == 10
+    assert "poll_minutes" not in cfg
     assert len(cfg["lists"]) == 1
     assert cfg["lists"][0]["id"] == "default"
     assert cfg["lists"][0]["name"] == "Default"
@@ -104,29 +108,25 @@ def test_load_migrates_flat_file(monkeypatch, tmp_path):
 
 def test_validate_rejects_bad_lists():
     with pytest.raises(ValueError, match="At least one watchlist"):
-        signals.validate_config({"poll_minutes": 5, "lists": []})
+        signals.validate_config({"lists": []})
 
     with pytest.raises(ValueError, match="Duplicate watchlist name"):
         signals.validate_config({
-            "poll_minutes": 5,
             "lists": [_list(name="Tech"), _list(id="tech2", name="tech")],
         })
 
     with pytest.raises(ValueError, match="Invalid symbol"):
         signals.validate_config({
-            "poll_minutes": 5,
             "lists": [_list(symbols=["BAD SYMBOL"])],
         })
 
     with pytest.raises(ValueError, match="Unknown pattern"):
         signals.validate_config({
-            "poll_minutes": 5,
             "lists": [_list(patterns=["not_a_pattern"])],
         })
 
     with pytest.raises(ValueError, match="Telegram timeframe"):
         signals.validate_config({
-            "poll_minutes": 5,
             "lists": [_list(telegram_timeframes=[])],
         })
 

@@ -223,8 +223,9 @@ export const WatchList = z
 export type WatchList = z.infer<typeof WatchList>;
 
 export const SignalsConfig = z.object({
-  poll_minutes: z.number().int(),
   lists: z.array(WatchList),
+  /** @deprecated ignored by the bot — scheduling is per bar close */
+  poll_minutes: z.number().int().optional(),
 });
 export type SignalsConfig = z.infer<typeof SignalsConfig>;
 
@@ -241,6 +242,7 @@ export const SignalsConfigResponse = z.object({
   patterns: z.array(SignalPattern),
   telegram_configured: z.boolean(),
   discord_configured: DiscordConfigured,
+  discord_available_timeframes: z.array(z.string()),
 });
 export type SignalsConfigResponse = z.infer<typeof SignalsConfigResponse>;
 
@@ -248,7 +250,6 @@ export const SignalsStatus = z.object({
   running: z.boolean(),
   last_check: z.string().nullable(),
   heartbeat_age_s: z.number().nullable(),
-  poll_minutes: z.number().int().nullable(),
 });
 export type SignalsStatus = z.infer<typeof SignalsStatus>;
 

@@ -1,44 +1,68 @@
-"""Discord webhook helpers and discord_route on watchlists."""
+"""Discord webhook helpers and timeframe → route mapping."""
 import pytest
 
 import signals
 
 
-def test_validate_accepts_discord_route():
+@pytest.fixture(autouse=True)
+def _discord_webhooks(monkeypatch):
+    monkeypatch.setenv("DISCORD_WEBHOOK_DAY_TRADE", "https://example.com/day")
+    monkeypatch.setenv("DISCORD_WEBHOOK_HOUR_TRADE", "https://example.com/hour")
+    monkeypatch.setenv("DISCORD_WEBHOOK_MINUTE_TRADE", "https://example.com/minute")
+    monkeypatch.setenv("DISCORD_WEBHOOK_WEEK_TRADE", "https://example.com/week")
+
+
+def test_discord_route_for_timeframe():
+    assert signals.discord_route_for_timeframe("1d") == "day"
+    assert signals.discord_route_for_timeframe("1h") == "hour"
+    assert signals.discord_route_for_timeframe("1m") == "minute"
+    assert signals.discord_route_for_timeframe("5m") == "minute"
+    assert signals.discord_route_for_timeframe("1w") == "week"
+    assert signals.discord_route_for_timeframe("bogus") is None
+
+
+def test_discord_timeframes_available(monkeypatch):
+    for key in signals.DISCORD_ROUTE_ENV.values():
+        monkeypatch.delenv(key, raising=False)
+    assert signals.discord_timeframes_available() == []
+    monkeypatch.setenv("DISCORD_WEBHOOK_DAY_TRADE", "https://example.com/day")
+    assert signals.discord_timeframes_available() == ["1d"]
+    monkeypatch.setenv("DISCORD_WEBHOOK_MINUTE_TRADE", "https://example.com/min")
+    assert "1m" in signals.discord_timeframes_available()
+    assert "1d" in signals.discord_timeframes_available()
+
+
+def test_validate_rejects_discord_tf_without_webhook(monkeypatch):
+    monkeypatch.delenv("DISCORD_WEBHOOK_MINUTE_TRADE", raising=False)
+    with pytest.raises(ValueError, match="Discord webhook not configured"):
+        signals.validate_config({
+            "lists": [{
+                "id": "default",
+                "name": "Default",
+                "symbols": ["SPY"],
+                "telegram_timeframes": ["1d"],
+                "discord_timeframes": ["1m"],
+                "patterns": ["bullish_engulfing"],
+            }],
+        })
+
+
+def test_validate_allows_empty_discord_timeframes():
     cfg = signals.validate_config({
-        "poll_minutes": 5,
         "lists": [{
-            "id": "day",
-            "name": "Day",
+            "id": "default",
+            "name": "Default",
             "symbols": ["SPY"],
             "telegram_timeframes": ["1d"],
-            "discord_timeframes": ["1d"],
+            "discord_timeframes": [],
             "patterns": ["bullish_engulfing"],
-            "discord_route": "day",
         }],
     })
-    assert cfg["lists"][0]["discord_route"] == "day"
+    assert cfg["lists"][0]["discord_timeframes"] == []
 
 
-def test_validate_accepts_discord_route_minute():
+def test_validate_strips_legacy_discord_route():
     cfg = signals.validate_config({
-        "poll_minutes": 5,
-        "lists": [{
-            "id": "min",
-            "name": "Minute",
-            "symbols": ["SPY"],
-            "telegram_timeframes": ["1m"],
-            "discord_timeframes": ["1m"],
-            "patterns": ["bullish_engulfing"],
-            "discord_route": "minute",
-        }],
-    })
-    assert cfg["lists"][0]["discord_route"] == "minute"
-
-
-def test_validate_omits_null_discord_route():
-    cfg = signals.validate_config({
-        "poll_minutes": 5,
         "lists": [{
             "id": "default",
             "name": "Default",
@@ -46,26 +70,10 @@ def test_validate_omits_null_discord_route():
             "telegram_timeframes": ["1d"],
             "discord_timeframes": ["1d"],
             "patterns": ["bullish_engulfing"],
-            "discord_route": None,
+            "discord_route": "day",
         }],
     })
     assert "discord_route" not in cfg["lists"][0]
-
-
-def test_validate_rejects_bad_discord_route():
-    with pytest.raises(ValueError, match="discord_route"):
-        signals.validate_config({
-            "poll_minutes": 5,
-            "lists": [{
-                "id": "default",
-                "name": "Default",
-                "symbols": ["SPY"],
-                "telegram_timeframes": ["1d"],
-                "discord_timeframes": ["1d"],
-                "patterns": ["bullish_engulfing"],
-                "discord_route": "monthly",
-            }],
-        })
 
 
 def test_discord_webhook_url(monkeypatch):
@@ -90,7 +98,6 @@ def test_discord_configured(monkeypatch):
 
 def test_validate_accepts_discord_weekly_timeframe():
     cfg = signals.validate_config({
-        "poll_minutes": 5,
         "lists": [{
             "id": "default",
             "name": "Default",
@@ -98,14 +105,11 @@ def test_validate_accepts_discord_weekly_timeframe():
             "telegram_timeframes": ["1d"],
             "discord_timeframes": ["1w", "1d"],
             "patterns": ["bullish_engulfing"],
-            "discord_route": "week",
         }],
     })
     assert cfg["lists"][0]["discord_timeframes"] == ["1w", "1d"]
-    assert cfg["lists"][0]["discord_route"] == "week"
 
     legacy = signals.validate_config({
-        "poll_minutes": 5,
         "lists": [{
             "id": "default",
             "name": "Default",
@@ -116,22 +120,6 @@ def test_validate_accepts_discord_weekly_timeframe():
         }],
     })
     assert legacy["lists"][0]["discord_timeframes"] == ["1w"]
-
-
-def test_validate_maps_legacy_weak_route_to_week():
-    cfg = signals.validate_config({
-        "poll_minutes": 5,
-        "lists": [{
-            "id": "default",
-            "name": "Default",
-            "symbols": ["SPY"],
-            "telegram_timeframes": ["1d"],
-            "discord_timeframes": ["1d"],
-            "patterns": ["bullish_engulfing"],
-            "discord_route": "weak",
-        }],
-    })
-    assert cfg["lists"][0]["discord_route"] == "week"
 
 
 def test_dc_send_text(monkeypatch):

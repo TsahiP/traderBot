@@ -86,12 +86,12 @@ truth. Main areas:
   checked on every fetch.
 - **Signals** — configure candlestick-pattern watchlists (symbols, patterns,
   separate **Telegram** and **Discord** timeframe sets per list). The signal bot
-  pushes alerts with a chart image when a pattern completes on the last closed
-  bar. **Telegram** uses `telegram_timeframes`; optional **Discord** per list
-  (day / hour / minute / week trade rooms) uses `discord_timeframes` (includes optional weekly `1w`) when
-  `discord_route` is set. Legacy configs with a single `timeframes` array apply
-  to both channels. The UI has separate Telegram and Discord panels with test
-  buttons for each webhook route.
+  scans each list on its own bar-close schedule and pushes alerts with a chart
+  image when a pattern completes on the last closed bar. **Discord** timeframes
+  map automatically to day/hour/minute/week webhooks (`1d`→day, `1h`→hour,
+  `1m`/`5m`/`15m`/`30m`→minute, `1w`→week); the UI only offers Discord TFs whose
+  webhook is set in `.env`. Legacy configs with a single `timeframes` array apply
+  to both channels. Test buttons per webhook route remain on the Discord card.
 
 Works with or without Alpaca keys — without them the tape falls back to the
 latest backtest bar. Run `livebot.py` alongside and watch paper trades appear
@@ -101,7 +101,7 @@ as the bot opens and closes them.
 
 Watches your watchlists from the **Signals** tab and sends pattern alerts
 (text + PNG chart). Config lives in `output/signal_config.json` and is re-read
-every cycle — save in the UI and the bot picks it up without a restart.
+on each scheduler wake — save in the UI and the bot picks it up without a restart.
 
 ```powershell
 python signalbot.py
