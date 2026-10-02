@@ -19,11 +19,20 @@ def _list(**overrides):
         "id": "default",
         "name": "Default",
         "symbols": ["SPY"],
-        "timeframes": ["1d"],
+        "telegram_timeframes": ["1d"],
+        "discord_timeframes": ["1d"],
         "patterns": ["bullish_engulfing"],
     }
     item.update(overrides)
     return item
+
+
+def test_validate_maps_crypto_spot_aliases():
+    cfg = signals.validate_config({
+        "poll_minutes": 5,
+        "lists": [_list(symbols=["btc", "ETH", "SPY"])],
+    })
+    assert cfg["lists"][0]["symbols"] == ["BTC-USD", "ETH-USD", "SPY"]
 
 
 def test_validate_accepts_lists():
@@ -31,12 +40,43 @@ def test_validate_accepts_lists():
         "poll_minutes": 5,
         "lists": [
             _list(),
-            _list(id="tech", name="Tech", symbols=["aapl", "AAPL", "msft"], timeframes=["1h", "1d"]),
+            _list(
+                id="tech",
+                name="Tech",
+                symbols=["aapl", "AAPL", "msft"],
+                telegram_timeframes=["1h", "1d"],
+                discord_timeframes=["1d"],
+            ),
         ],
     })
     assert cfg["poll_minutes"] == 5
     assert cfg["lists"][1]["symbols"] == ["AAPL", "MSFT"]
-    assert cfg["lists"][1]["timeframes"] == ["1h", "1d"]
+    assert cfg["lists"][1]["telegram_timeframes"] == ["1h", "1d"]
+    assert cfg["lists"][1]["discord_timeframes"] == ["1d"]
+
+
+def test_validate_legacy_shared_timeframes():
+    cfg = signals.validate_config({
+        "poll_minutes": 5,
+        "lists": [{
+            "id": "default",
+            "name": "Default",
+            "symbols": ["SPY"],
+            "timeframes": ["5m", "1h"],
+            "patterns": ["bullish_engulfing"],
+        }],
+    })
+    assert cfg["lists"][0]["telegram_timeframes"] == ["5m", "1h"]
+    assert cfg["lists"][0]["discord_timeframes"] == ["5m", "1h"]
+    assert "timeframes" not in cfg["lists"][0]
+
+
+def test_watchlist_scan_timeframes_union():
+    wl = {
+        "telegram_timeframes": ["1h", "1d"],
+        "discord_timeframes": ["15m", "1d"],
+    }
+    assert signals.watchlist_scan_timeframes(wl) == ["1h", "1d", "15m"]
 
 
 def test_load_migrates_flat_file(monkeypatch, tmp_path):
@@ -56,7 +96,8 @@ def test_load_migrates_flat_file(monkeypatch, tmp_path):
     assert cfg["lists"][0]["id"] == "default"
     assert cfg["lists"][0]["name"] == "Default"
     assert cfg["lists"][0]["symbols"] == ["QQQ"]
-    assert cfg["lists"][0]["timeframes"] == ["1h"]
+    assert cfg["lists"][0]["telegram_timeframes"] == ["1h"]
+    assert cfg["lists"][0]["discord_timeframes"] == ["1h"]
     assert cfg["lists"][0]["patterns"] == ["morning_star"]
     assert json.loads(path.read_text(encoding="utf-8")) == flat
 
@@ -83,7 +124,15 @@ def test_validate_rejects_bad_lists():
             "lists": [_list(patterns=["not_a_pattern"])],
         })
 
+    with pytest.raises(ValueError, match="Telegram timeframe"):
+        signals.validate_config({
+            "poll_minutes": 5,
+            "lists": [_list(telegram_timeframes=[])],
+        })
+
 
 def test_default_config_covers_every_pattern():
     cfg = signals.default_config()
     assert cfg["lists"][0]["patterns"] == list(PATTERNS.keys())
+    assert cfg["lists"][0]["telegram_timeframes"] == ["1d"]
+    assert cfg["lists"][0]["discord_timeframes"] == ["1d"]

@@ -11,12 +11,29 @@ def test_validate_accepts_discord_route():
             "id": "day",
             "name": "Day",
             "symbols": ["SPY"],
-            "timeframes": ["1d"],
+            "telegram_timeframes": ["1d"],
+            "discord_timeframes": ["1d"],
             "patterns": ["bullish_engulfing"],
             "discord_route": "day",
         }],
     })
     assert cfg["lists"][0]["discord_route"] == "day"
+
+
+def test_validate_accepts_discord_route_minute():
+    cfg = signals.validate_config({
+        "poll_minutes": 5,
+        "lists": [{
+            "id": "min",
+            "name": "Minute",
+            "symbols": ["SPY"],
+            "telegram_timeframes": ["1m"],
+            "discord_timeframes": ["1m"],
+            "patterns": ["bullish_engulfing"],
+            "discord_route": "minute",
+        }],
+    })
+    assert cfg["lists"][0]["discord_route"] == "minute"
 
 
 def test_validate_omits_null_discord_route():
@@ -26,7 +43,8 @@ def test_validate_omits_null_discord_route():
             "id": "default",
             "name": "Default",
             "symbols": ["SPY"],
-            "timeframes": ["1d"],
+            "telegram_timeframes": ["1d"],
+            "discord_timeframes": ["1d"],
             "patterns": ["bullish_engulfing"],
             "discord_route": None,
         }],
@@ -42,7 +60,8 @@ def test_validate_rejects_bad_discord_route():
                 "id": "default",
                 "name": "Default",
                 "symbols": ["SPY"],
-                "timeframes": ["1d"],
+                "telegram_timeframes": ["1d"],
+                "discord_timeframes": ["1d"],
                 "patterns": ["bullish_engulfing"],
                 "discord_route": "monthly",
             }],
@@ -60,9 +79,59 @@ def test_discord_webhook_url(monkeypatch):
 def test_discord_configured(monkeypatch):
     for key in signals.DISCORD_ROUTE_ENV.values():
         monkeypatch.delenv(key, raising=False)
-    assert signals.discord_configured() == {"day": False, "hour": False, "week": False}
+    assert signals.discord_configured() == {
+        "day": False, "hour": False, "minute": False, "week": False,
+    }
     monkeypatch.setenv("DISCORD_WEBHOOK_HOUR_TRADE", "https://example.com/hook")
-    assert signals.discord_configured() == {"day": False, "hour": True, "week": False}
+    assert signals.discord_configured() == {
+        "day": False, "hour": True, "minute": False, "week": False,
+    }
+
+
+def test_validate_accepts_discord_weekly_timeframe():
+    cfg = signals.validate_config({
+        "poll_minutes": 5,
+        "lists": [{
+            "id": "default",
+            "name": "Default",
+            "symbols": ["SPY"],
+            "telegram_timeframes": ["1d"],
+            "discord_timeframes": ["1w", "1d"],
+            "patterns": ["bullish_engulfing"],
+            "discord_route": "week",
+        }],
+    })
+    assert cfg["lists"][0]["discord_timeframes"] == ["1w", "1d"]
+    assert cfg["lists"][0]["discord_route"] == "week"
+
+    legacy = signals.validate_config({
+        "poll_minutes": 5,
+        "lists": [{
+            "id": "default",
+            "name": "Default",
+            "symbols": ["SPY"],
+            "telegram_timeframes": ["1d"],
+            "discord_timeframes": ["w"],
+            "patterns": ["bullish_engulfing"],
+        }],
+    })
+    assert legacy["lists"][0]["discord_timeframes"] == ["1w"]
+
+
+def test_validate_maps_legacy_weak_route_to_week():
+    cfg = signals.validate_config({
+        "poll_minutes": 5,
+        "lists": [{
+            "id": "default",
+            "name": "Default",
+            "symbols": ["SPY"],
+            "telegram_timeframes": ["1d"],
+            "discord_timeframes": ["1d"],
+            "patterns": ["bullish_engulfing"],
+            "discord_route": "weak",
+        }],
+    })
+    assert cfg["lists"][0]["discord_route"] == "week"
 
 
 def test_dc_send_text(monkeypatch):

@@ -669,7 +669,8 @@ def api_signals_discord_test():
     body = request.get_json(silent=True) or {}
     route = str(body.get("route", "")).strip().lower()
     if route not in signals.DISCORD_ROUTES:
-        return jsonify({"error": "route must be day, hour, or week"}), 400
+        routes = ", ".join(signals.DISCORD_ROUTES)
+        return jsonify({"error": f"route must be one of: {routes}"}), 400
     url = signals.discord_webhook_url(route)
     if not url:
         return jsonify({"error": f"{signals.DISCORD_ROUTE_ENV[route]} missing in .env"}), 400

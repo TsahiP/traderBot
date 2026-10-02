@@ -174,7 +174,8 @@ function SignalsFormCard({ config, patterns, onSaved }: {
       id,
       name,
       symbols: ["SPY"],
-      timeframes: ["1d"],
+      telegram_timeframes: ["1d"],
+      discord_timeframes: ["1d"],
       patterns: patterns.map((p) => p.id),
     };
     setLists((prev) => [...prev, created]);
@@ -206,8 +207,13 @@ function SignalsFormCard({ config, patterns, onSaved }: {
         return;
       }
       names.add(key);
-      if (!list.symbols.length || !list.timeframes.length || !list.patterns.length) {
-        toast.error(`'${list.name}' needs a symbol, timeframe and pattern`);
+      if (
+        !list.symbols.length ||
+        !list.telegram_timeframes.length ||
+        !list.discord_timeframes.length ||
+        !list.patterns.length
+      ) {
+        toast.error(`'${list.name}' needs symbols, Telegram/Discord timeframes, and patterns`);
         return;
       }
     }
@@ -242,7 +248,7 @@ function SignalsFormCard({ config, patterns, onSaved }: {
       <CardHeader>
         <CardTitle className="text-sm">Signal watchlists</CardTitle>
         <CardDescription>
-          Each list has its own tickers, timeframes and patterns. Alerts go to Telegram; optionally mirror to a Discord channel per list.
+          Each list has its own tickers, patterns, and per-channel timeframes. Telegram and Discord can watch different bars; Discord routing is optional per list.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -341,6 +347,7 @@ function SignalsFormCard({ config, patterns, onSaved }: {
                     <SelectItem value="none">None</SelectItem>
                     <SelectItem value="day">Day trade</SelectItem>
                     <SelectItem value="hour">Hour trade</SelectItem>
+                    <SelectItem value="minute">Minute trade</SelectItem>
                     <SelectItem value="week">Week trade</SelectItem>
                   </SelectContent>
                 </Select>
@@ -350,17 +357,39 @@ function SignalsFormCard({ config, patterns, onSaved }: {
               </Field>
 
               <Field>
-                <FieldLabel>Timeframes</FieldLabel>
+                <FieldLabel>Telegram timeframes</FieldLabel>
                 <ToggleGroup
                   multiple
-                  value={selected.timeframes}
-                  onValueChange={(v) => patchSelected({ timeframes: [...(v as string[])] })}
+                  value={selected.telegram_timeframes}
+                  onValueChange={(v) =>
+                    patchSelected({ telegram_timeframes: [...(v as string[])] })
+                  }
                 >
                   {TIMEFRAMES.map((tf) => (
                     <ToggleGroupItem key={tf} value={tf}>
                       {tf}
                     </ToggleGroupItem>
                   ))}
+                </ToggleGroup>
+              </Field>
+
+              <Field>
+                <FieldLabel>Discord timeframes</FieldLabel>
+                <ToggleGroup
+                  multiple
+                  value={selected.discord_timeframes}
+                  onValueChange={(v) =>
+                    patchSelected({ discord_timeframes: [...(v as string[])] })
+                  }
+                >
+                  {TIMEFRAMES.map((tf) => (
+                    <ToggleGroupItem key={`dc-${tf}`} value={tf}>
+                      {tf}
+                    </ToggleGroupItem>
+                  ))}
+                  <ToggleGroupItem key="dc-1w" value="1w">
+                    1w
+                  </ToggleGroupItem>
                 </ToggleGroup>
               </Field>
 
@@ -411,6 +440,7 @@ function SignalsFormCard({ config, patterns, onSaved }: {
 const DISCORD_TEST_ROUTES: { route: DiscordRoute; label: string }[] = [
   { route: "day", label: "Day trade" },
   { route: "hour", label: "Hour trade" },
+  { route: "minute", label: "Minute trade" },
   { route: "week", label: "Week trade" },
 ];
 
@@ -521,7 +551,7 @@ export function SignalsPanel() {
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Discord webhooks</CardTitle>
-            <CardDescription>Day / hour / week channels — set per watchlist above</CardDescription>
+            <CardDescription>Day / hour / minute / week channels — set per watchlist above</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <div className="flex flex-wrap gap-2">

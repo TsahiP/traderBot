@@ -84,12 +84,14 @@ truth. Main areas:
   ▲ buy / ▼ sell markers where the logic fires, volume bars, metrics and the
   full trade list. Inputs are validated with zod; API responses are schema
   checked on every fetch.
-- **Signals** — configure candlestick-pattern watchlists (symbols, timeframes,
-  patterns). The signal bot pushes alerts with a chart image when a pattern
-  completes on the last closed bar. Delivery is **Telegram** for every list,
-  plus an optional **Discord** channel per watchlist (day / hour / week trade
-  rooms). The UI has separate Telegram and Discord panels with test buttons for
-  each webhook route.
+- **Signals** — configure candlestick-pattern watchlists (symbols, patterns,
+  separate **Telegram** and **Discord** timeframe sets per list). The signal bot
+  pushes alerts with a chart image when a pattern completes on the last closed
+  bar. **Telegram** uses `telegram_timeframes`; optional **Discord** per list
+  (day / hour / minute / week trade rooms) uses `discord_timeframes` (includes optional weekly `1w`) when
+  `discord_route` is set. Legacy configs with a single `timeframes` array apply
+  to both channels. The UI has separate Telegram and Discord panels with test
+  buttons for each webhook route.
 
 Works with or without Alpaca keys — without them the tape falls back to the
 latest backtest bar. Run `livebot.py` alongside and watch paper trades appear
@@ -107,7 +109,7 @@ python signalbot.py
 
 Logs: `logs/signalbot.log`. Stop with `Ctrl+C`.
 
-**Telegram** (required for the bot to run today): set in `.env`:
+**Telegram** (for `telegram_timeframes` alerts): set in `.env`:
 
 | Variable | Purpose |
 |---|---|
@@ -124,10 +126,12 @@ them):
 |---|---|
 | `DISCORD_WEBHOOK_DAY_TRADE` | Day-trade room |
 | `DISCORD_WEBHOOK_HOUR_TRADE` | Hour-trade room |
+| `DISCORD_WEBHOOK_MINUTE_TRADE` | Minute-trade room |
 | `DISCORD_WEBHOOK_WEEK_TRADE` | Week-trade room |
 
-In each watchlist, choose **Discord channel**: None, Day trade, Hour trade, or
-Week trade. Use **Test day / hour / week** on the Discord card to verify each
+In each watchlist, choose **Discord channel**: None, Day trade, Hour trade,
+Minute trade, or Week trade. Discord **timeframes** include **`1w`** for weekly candles (Telegram does not).
+Use the test buttons on the Discord card to verify each
 webhook. Discord failures are logged only; dedupe and history still follow
 Telegram success.
 

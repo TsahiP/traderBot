@@ -13,14 +13,25 @@ import config
 from candle_patterns import PATTERNS
 
 VALID_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "1d"]
+VALID_DISCORD_TIMEFRAMES = [*VALID_TIMEFRAMES, "1w"]
+
+
+def _coerce_discord_timeframe_list(tfs) -> list:
+    """Normalize legacy `w` to canonical `1w` before validation."""
+    if not isinstance(tfs, list):
+        return tfs
+    return ["1w" if tf == "w" else tf for tf in tfs]
 _SYMBOL_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
+# yfinance: bare BTC/ETH are Grayscale ETFs, not spot crypto.
+_YFINANCE_SYMBOL_ALIASES = {"BTC": "BTC-USD", "ETH": "ETH-USD"}
 _ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 
-DiscordRoute = Literal["day", "hour", "week"]
-DISCORD_ROUTES: tuple[DiscordRoute, ...] = ("day", "hour", "week")
+DiscordRoute = Literal["day", "hour", "minute", "week"]
+DISCORD_ROUTES: tuple[DiscordRoute, ...] = ("day", "hour", "minute", "week")
 DISCORD_ROUTE_ENV: dict[DiscordRoute, str] = {
     "day": "DISCORD_WEBHOOK_DAY_TRADE",
     "hour": "DISCORD_WEBHOOK_HOUR_TRADE",
+    "minute": "DISCORD_WEBHOOK_MINUTE_TRADE",
     "week": "DISCORD_WEBHOOK_WEEK_TRADE",
 }
 
@@ -30,7 +41,8 @@ def _default_list() -> dict:
         "id": "default",
         "name": "Default",
         "symbols": ["SPY"],
-        "timeframes": ["1d"],
+        "telegram_timeframes": ["1d"],
+        "discord_timeframes": ["1d"],
         "patterns": list(PATTERNS.keys()),
     }
 
@@ -51,6 +63,7 @@ def _clean_symbols(symbols) -> list[str]:
     clean = []
     for s in symbols:
         s = str(s).strip().upper()
+        s = _YFINANCE_SYMBOL_ALIASES.get(s, s)
         if not _SYMBOL_RE.match(s):
             raise ValueError(f"Invalid symbol '{s}' - letters, digits, dots and dashes only")
         if s not in clean:
@@ -58,13 +71,40 @@ def _clean_symbols(symbols) -> list[str]:
     return clean
 
 
-def _clean_timeframes(tfs) -> list[str]:
+def _clean_timeframes(
+    tfs,
+    label: str = "timeframe",
+    *,
+    allowed: list[str] | None = None,
+) -> list[str]:
+    allowed = allowed or VALID_TIMEFRAMES
     if not isinstance(tfs, list) or not tfs:
-        raise ValueError("At least one timeframe is required")
+        raise ValueError(f"At least one {label} is required")
     for tf in tfs:
-        if tf not in VALID_TIMEFRAMES:
-            raise ValueError(f"Unknown timeframe '{tf}' - use {', '.join(VALID_TIMEFRAMES)}")
+        if tf not in allowed:
+            raise ValueError(f"Unknown timeframe '{tf}' - use {', '.join(allowed)}")
     return list(dict.fromkeys(tfs))
+
+
+def _resolve_channel_timeframes(item: dict) -> tuple[list[str], list[str]]:
+    """telegram_timeframes / discord_timeframes, with legacy `timeframes` for both."""
+    legacy = item.get("timeframes")
+    tg_raw = item.get("telegram_timeframes")
+    dc_raw = item.get("discord_timeframes")
+    if tg_raw is None:
+        tg_raw = legacy if legacy is not None else ["1d"]
+    if dc_raw is None:
+        dc_raw = legacy if legacy is not None else ["1d"]
+    return tg_raw, dc_raw
+
+
+def watchlist_scan_timeframes(watchlist: dict) -> list[str]:
+    """Union of channel timeframes (deduped, stable order)."""
+    tfs: list[str] = []
+    for tf in watchlist.get("telegram_timeframes", []) + watchlist.get("discord_timeframes", []):
+        if tf not in tfs:
+            tfs.append(tf)
+    return tfs
 
 
 def _clean_discord_route(raw) -> str | None:
@@ -73,6 +113,8 @@ def _clean_discord_route(raw) -> str | None:
     if isinstance(raw, str) and not raw.strip():
         return None
     route = str(raw).strip().lower()
+    if route == "weak":
+        route = "week"
     if route not in DISCORD_ROUTES:
         raise ValueError(f"discord_route must be one of {', '.join(DISCORD_ROUTES)} or null")
     return route
@@ -107,7 +149,8 @@ def _migrate_flat(raw: dict) -> dict:
             "id": "default",
             "name": "Default",
             "symbols": raw.get("symbols", ["SPY"]),
-            "timeframes": raw.get("timeframes", ["1d"]),
+            "telegram_timeframes": raw.get("timeframes", ["1d"]),
+            "discord_timeframes": raw.get("timeframes", ["1d"]),
             "patterns": raw.get("patterns", list(PATTERNS.keys())),
         }],
     }
@@ -173,7 +216,13 @@ def validate_config(cfg) -> dict:
         label = f"Watchlist '{name}'"
         try:
             symbols = _clean_symbols(item.get("symbols"))
-            timeframes = _clean_timeframes(item.get("timeframes"))
+            tg_raw, dc_raw = _resolve_channel_timeframes(item)
+            telegram_timeframes = _clean_timeframes(tg_raw, "Telegram timeframe")
+            discord_timeframes = _clean_timeframes(
+                _coerce_discord_timeframe_list(dc_raw),
+                "Discord timeframe",
+                allowed=VALID_DISCORD_TIMEFRAMES,
+            )
             patterns = _clean_patterns(item.get("patterns"))
             discord_route = _clean_discord_route(item.get("discord_route"))
         except ValueError as exc:
@@ -183,7 +232,8 @@ def validate_config(cfg) -> dict:
             "id": list_id,
             "name": name,
             "symbols": symbols,
-            "timeframes": timeframes,
+            "telegram_timeframes": telegram_timeframes,
+            "discord_timeframes": discord_timeframes,
             "patterns": patterns,
         }
         if discord_route is not None:

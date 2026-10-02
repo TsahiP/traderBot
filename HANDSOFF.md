@@ -72,7 +72,7 @@ npm run dev                # UI  :3000  (or npm run build && npm start)
 Optional envs: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` (paper keys, in `.env` —
 gitignored). Without them the dashboard still works on backtest data. Signal bot:
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`; optional Discord per route:
-`DISCORD_WEBHOOK_DAY_TRADE`, `DISCORD_WEBHOOK_HOUR_TRADE`, `DISCORD_WEBHOOK_WEEK_TRADE`.
+`DISCORD_WEBHOOK_DAY_TRADE`, `DISCORD_WEBHOOK_HOUR_TRADE`, `DISCORD_WEBHOOK_MINUTE_TRADE`, `DISCORD_WEBHOOK_WEEK_TRADE`.
 
 ## 4. Project layout
 
@@ -133,8 +133,8 @@ tradebot/
 | `output/data_<SYM>.csv` | `backtest.py` | raw OHLCV bars used by the run |
 | `output/live_trades.csv` | `livebot.py` | paper round trips appended live (dashboard "LIVE" rows) |
 | `logs/bot.log` | `livebot.py` | every signal/order/fill |
-| `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{poll_minutes, lists: [{id, name, symbols, timeframes, patterns, discord_route?}]}` — optional `discord_route` is `day` \| `hour` \| `week` for Discord webhook routing; each list is its own watchlist; old flat files load as one list named Default; re-read by `signalbot.py` every cycle; delete to reset to defaults (one Default list: SPY, 1d, all patterns) |
-| `output/signal_log.json` | `signalbot.py` | every sent alert incl. its dedupe key (`SYMBOL\|tf\|bar_ts\|pattern`) — retried on Telegram failure until it lands; capped at 1000 entries |
+| `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{poll_minutes, lists: [{id, name, symbols, telegram_timeframes[], discord_timeframes[], patterns, discord_route?}]}` — per-channel timeframe sets; legacy `timeframes` on a list (or flat file) applies to both channels on load; optional `discord_route` is `day` \| `hour` \| `minute` \| `week` (legacy `weak` coerces to `week`); `discord_timeframes` may include `1w` (weekly bars, yfinance `1wk`; legacy `w` coerces to `1w`) — Telegram timeframes do not include `1w`; each list is its own watchlist; re-read by `signalbot.py` every cycle |
+| `output/signal_log.json` | `signalbot.py` | every sent alert incl. its dedupe key (`SYMBOL\|tf\|bar_ts\|pattern`) — retried until required channel sends succeed; capped at 1000 entries |
 | `output/signal_heartbeat.json` | `signalbot.py` | `{ts, poll_minutes}` of the last cycle start — `/api/signals/status` derives "running" from its age (< poll + 90 s) |
 | `logs/signalbot.log` | `signalbot.py` | one line per cycle + every SIGNAL sent |
 
@@ -153,12 +153,12 @@ if you regenerate the file differently.
 | `GET /api/strategies` | — | registry `[{id, label, description, timeframes[], flat_eod, default_allow_short, default_timeframe, params[{key,label,min,max,step,default,int?,unit?}]}]` — drives the lab form |
 | `GET /api/backtest/run` | `symbol` (def SPY) `strategy` (def sma_crossover) `timeframe` (def 1d) `start` `end` (optional `YYYY-MM-DD`, inclusive; intraday requests clamped to the data window) `qty` `capital` `allow_short` (`true`/`false`) `cost_per_share` + per-strategy params (`fast`,`slow`,`deviation_pct`,`exit_pct`,`range_minutes`,`tp_mult`,`sl_mult`,`max_range_pct`,`rsi_period`,`oversold`,`overbought`,`exit_level`) | `{meta, metrics{...costs_total}, series{OHLCV+smas+equity ≤800 bars}, markers[{index, date, side: buy\|sell, eod?, price}], trades[{..., side, exit_type: signal\|eod, costs}]}` |
 | `POST /api/analyze` | JSON body = same params as `/api/backtest/run` | re-runs the backtest, digests results + allowed param ranges, and returns `{model, analysis}` from the local LLM (`503` when LM Studio is unreachable) |
-| `GET /api/signals/config` | — | `{config: {poll_minutes, lists: [{id, name, symbols[], timeframes[], patterns[], discord_route?}]}, patterns: [{id, label, direction, bars}], telegram_configured, discord_configured: {day, hour, week}}` |
-| `POST /api/signals/config` | JSON body = same shape as `config` (symbols uppercased/deduped, list ids/names unique) | validates timeframes (`1m 5m 15m 30m 1h 1d`) and pattern ids, writes `output/signal_config.json`, returns the saved config; `400` with a message on bad input |
+| `GET /api/signals/config` | — | `{config: {poll_minutes, lists: [{id, name, symbols[], telegram_timeframes[], discord_timeframes[], patterns[], discord_route?}]}, patterns: [...], telegram_configured, discord_configured: {day, hour, minute, week}}` — lists may still carry legacy `timeframes` on disk until saved |
+| `POST /api/signals/config` | JSON body = same shape as `config` (symbols uppercased/deduped, list ids/names unique; legacy `timeframes` fills both channel arrays if channel fields omitted) | validates Telegram timeframes (`1m 5m 15m 30m 1h 1d`), Discord timeframes (same plus `1w`), and pattern ids, writes `output/signal_config.json`, returns the saved config; `400` with a message on bad input |
 | `GET /api/signals/status` | — | `{running, last_check?, heartbeat_age_s?, poll_minutes?}` from the heartbeat file |
 | `GET /api/signals/history` | `limit` (def 50) | `{signals: [...]}` newest first — every alert ever sent (key, ts, list, symbol, timeframe, pattern_id, label, direction, close/entry/stop/target, bar_ts) |
 | `POST /api/signals/test` | — | sends a plain "test" message to Telegram so you can verify the keys; `{ok}` or `502` with the API error |
-| `POST /api/signals/discord-test` | JSON `{route: day\|hour\|week}` | sends a test message to the matching `DISCORD_WEBHOOK_*` env URL; `{ok}` or `400`/`502` |
+| `POST /api/signals/discord-test` | JSON `{route: day\|hour\|minute\|week}` | sends a test message to the matching `DISCORD_WEBHOOK_*` env URL; `{ok}` or `400`/`502` |
 
 Data windows per timeframe: `1d` → `BACKTEST_START` (2009); `1m` → 7 days;
 `5m`/`15m`/`30m` → 60 days; `1h` → 730 days (yfinance caps). Intraday
@@ -275,12 +275,17 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   ≤ half-body doji-ish middle candle whose center is past the first bar's
   midpoint and a third bar closing beyond it). Unit-tested on synthetic OHLCV:
   12 positive/negative cases + multi-pattern detection, all passing.
-- **Alert flow:** `signalbot.py` polls yfinance per config (in-progress bar
-  dropped), detects patterns, computes entry = close, stop = extreme of the
-  whole pattern window, target = 2× risk (R:R 1:2), then sends Telegram text +
-  a matplotlib PNG (`chart_image.py`, last ~30 bars, alert bar highlighted).
-  Dedupe key `SYMBOL|tf|bar_ts|pattern` is logged only after a successful send,
-  so a failed Telegram call retries next cycle.
+- **Alert flow:** `signalbot.py` fetches bars for the **union** of each list's
+  `telegram_timeframes` and `discord_timeframes` (in-progress bar dropped),
+  detects patterns, computes entry = close, stop = pattern extreme, target =
+  2× risk (R:R 1:2), then sends Telegram only for TFs in
+  `telegram_timeframes` and Discord (when `discord_route` is set) only for TFs in
+  `discord_timeframes` — text + matplotlib PNG (`chart_image.py`). Dedupe key
+  `SYMBOL|tf|bar_ts|pattern` is logged after all **required** channel sends for
+  that alert succeed (Discord-only TFs can log without Telegram; both channels
+  when both apply must succeed before dedupe).
+- **Crypto symbols:** on save/load, `BTC` and `ETH` normalize to yfinance spot
+  tickers `BTC-USD` and `ETH-USD` (bare `BTC`/`ETH` on Yahoo are Grayscale ETFs).
 - **Verified end-to-end:** all five `/api/signals/*` endpoints (incl. 400 on bad
   timeframe), test message delivered to Telegram, and one real alert — TSLA 15m
   bearish engulfing on the last closed bar — sent with chart image and shown in

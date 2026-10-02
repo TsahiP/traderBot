@@ -192,17 +192,34 @@ export const SignalPattern = z.object({
 });
 export type SignalPattern = z.infer<typeof SignalPattern>;
 
-export const DiscordRoute = z.enum(["day", "hour", "week"]);
+export const DiscordRoute = z.enum(["day", "hour", "minute", "week"]);
 export type DiscordRoute = z.infer<typeof DiscordRoute>;
 
-export const WatchList = z.object({
-  id: z.string(),
-  name: z.string(),
-  symbols: z.array(z.string()),
-  timeframes: z.array(z.string()),
-  patterns: z.array(z.string()),
-  discord_route: DiscordRoute.nullable().optional(),
-});
+export const WatchList = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    symbols: z.array(z.string()),
+    telegram_timeframes: z.array(z.string()).optional(),
+    discord_timeframes: z.array(z.string()).optional(),
+    /** @deprecated legacy — both channels inherit on load */
+    timeframes: z.array(z.string()).optional(),
+    patterns: z.array(z.string()),
+    discord_route: DiscordRoute.nullable().optional(),
+  })
+  .transform((w) => {
+    const legacy = w.timeframes;
+    const telegram_timeframes =
+      w.telegram_timeframes ?? legacy ?? ["1d"];
+    const discord_timeframes =
+      w.discord_timeframes ?? legacy ?? ["1d"];
+    const { timeframes: _legacy, ...rest } = w;
+    return {
+      ...rest,
+      telegram_timeframes,
+      discord_timeframes,
+    };
+  });
 export type WatchList = z.infer<typeof WatchList>;
 
 export const SignalsConfig = z.object({
@@ -214,6 +231,7 @@ export type SignalsConfig = z.infer<typeof SignalsConfig>;
 export const DiscordConfigured = z.object({
   day: z.boolean(),
   hour: z.boolean(),
+  minute: z.boolean(),
   week: z.boolean(),
 });
 export type DiscordConfigured = z.infer<typeof DiscordConfigured>;
@@ -258,6 +276,10 @@ export type SignalsHistoryResponse = z.infer<typeof SignalsHistoryResponse>;
 
 export const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "1d"] as const;
 export type Timeframe = (typeof TIMEFRAMES)[number];
+
+/** Discord watchlists only — weekly bars (`1w` → yfinance `1wk`). */
+export const DISCORD_TIMEFRAMES = [...TIMEFRAMES, "1w"] as const;
+export type DiscordTimeframe = (typeof DISCORD_TIMEFRAMES)[number];
 
 const dateStr = z
   .union([z.literal(""), z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD")])

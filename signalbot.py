@@ -1,12 +1,11 @@
 """Signal bot: watches configured symbols/timeframes for Japanese candlestick
-patterns and pushes alerts (text + chart image) to Telegram.
+patterns and pushes alerts (text + chart image) to Telegram and/or Discord.
 
 Run in its own terminal:  python signalbot.py
 Config lives in output/signal_config.json and is re-read every cycle, so edits
 made in the Signals tab of the web UI apply without a restart.
 """
 import logging
-import sys
 import time
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
@@ -32,7 +31,16 @@ _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 logger.addHandler(_handler)
 
 # How much history to pull per cycle: enough for 3-bar patterns + a 30-bar chart.
-TF_PERIOD = {"1m": "5d", "5m": "15d", "15m": "30d", "30m": "60d", "1h": "90d", "1d": "180d"}
+TF_PERIOD = {
+    "1m": "5d",
+    "5m": "15d",
+    "15m": "30d",
+    "30m": "60d",
+    "1h": "90d",
+    "1d": "180d",
+    "1w": "5y",
+}
+_YF_INTERVAL = {"1w": "1wk"}
 _TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
 
 
@@ -43,7 +51,10 @@ def fetch_bars(symbol: str, timeframe: str) -> pd.DataFrame:
 
     last_df = pd.DataFrame()
     for _ in range(3):
-        df = yf.Ticker(symbol).history(period=TF_PERIOD[timeframe], interval=timeframe, auto_adjust=True)
+        yf_interval = _YF_INTERVAL.get(timeframe, timeframe)
+        df = yf.Ticker(symbol).history(
+            period=TF_PERIOD[timeframe], interval=yf_interval, auto_adjust=True
+        )
         last_df = df
         if not df.empty:
             break
@@ -54,7 +65,9 @@ def fetch_bars(symbol: str, timeframe: str) -> pd.DataFrame:
 
     now = datetime.now(NY)
     last_ts = df.index[-1].to_pydatetime()
-    if timeframe == "1d":
+    if timeframe == "1w":
+        in_progress = last_ts.isocalendar()[:2] == now.isocalendar()[:2]
+    elif timeframe == "1d":
         in_progress = last_ts.date() == now.date()
     else:
         minutes = _TF_MINUTES[timeframe]
@@ -98,6 +111,52 @@ def build_message(symbol: str, timeframe: str, pattern_id: str, bar_ts: str, lev
     return "\n".join(lines)
 
 
+def _try_deliver_alert(
+    watchlist: dict,
+    timeframe: str,
+    key: str,
+    message: str,
+    photo: bytes | None,
+    token: str | None,
+    chat_ids: list[str],
+) -> bool:
+    """Send to each channel that applies; return True when all required sends succeed."""
+    tg_tfs = set(watchlist.get("telegram_timeframes", []))
+    dc_tfs = set(watchlist.get("discord_timeframes", []))
+    route = watchlist.get("discord_route")
+    dc_url = signals.discord_webhook_url(route) if route else None
+
+    want_tg = timeframe in tg_tfs
+    want_dc = timeframe in dc_tfs and dc_url is not None
+    tg_ready = bool(token and chat_ids)
+
+    if want_tg and not tg_ready:
+        logger.warning("Telegram not configured — skipping TG for %s", key)
+    if timeframe in dc_tfs and route and not dc_url:
+        logger.warning("Discord webhook missing for route=%s — skipping DC for %s", route, key)
+
+    tg_required = want_tg and tg_ready
+    dc_required = want_dc
+
+    if not tg_required and not dc_required:
+        return False
+
+    tg_ok = True
+    if tg_required:
+        tg_ok = signals.tg_send(token, chat_ids, text=message, photo=photo)
+
+    dc_ok = True
+    if dc_required:
+        dc_ok = signals.dc_send(dc_url, text=message, photo=photo)
+
+    if tg_required and not tg_ok:
+        logger.error("Telegram send failed for %s (will retry next cycle)", key)
+    if dc_required and not dc_ok:
+        logger.warning("Discord send failed for %s (route=%s)", key, route)
+
+    return (not tg_required or tg_ok) and (not dc_required or dc_ok)
+
+
 def main() -> None:
     logger.info("Starting signal bot")
     while True:
@@ -107,78 +166,71 @@ def main() -> None:
         token, _ = signals.telegram_credentials()
         chat_ids = signals.telegram_chat_ids()
 
-        if not (token and chat_ids):
-            logger.warning("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in .env - skipping cycle")
-        else:
-            sent = signals.sent_keys()
-            bars_cache: dict[tuple[str, str], pd.DataFrame] = {}
+        sent = signals.sent_keys()
+        bars_cache: dict[tuple[str, str], pd.DataFrame] = {}
 
-            def get_bars(symbol: str, timeframe: str) -> pd.DataFrame | None:
-                pair = (symbol, timeframe)
-                if pair not in bars_cache:
-                    try:
-                        df = fetch_bars(symbol, timeframe)
-                    except Exception as exc:
-                        logger.warning("fetch %s %s failed: %s", symbol, timeframe, exc)
-                        df = pd.DataFrame()
-                    if len(df) < 5:
-                        logger.info("%s %s: not enough bars yet (%d)", symbol, timeframe, len(df))
-                        df = pd.DataFrame()
-                    bars_cache[pair] = df
-                cached = bars_cache[pair]
-                return cached if len(cached) else None
+        def get_bars(symbol: str, timeframe: str) -> pd.DataFrame | None:
+            pair = (symbol, timeframe)
+            if pair not in bars_cache:
+                try:
+                    df = fetch_bars(symbol, timeframe)
+                except Exception as exc:
+                    logger.warning("fetch %s %s failed: %s", symbol, timeframe, exc)
+                    df = pd.DataFrame()
+                if len(df) < 5:
+                    logger.info("%s %s: not enough bars yet (%d)", symbol, timeframe, len(df))
+                    df = pd.DataFrame()
+                bars_cache[pair] = df
+            cached = bars_cache[pair]
+            return cached if len(cached) else None
 
-            for watchlist in cfg["lists"]:
-                list_name = watchlist["name"]
-                for symbol in watchlist["symbols"]:
-                    for timeframe in watchlist["timeframes"]:
-                        df = get_bars(symbol, timeframe)
-                        if df is None:
+        for watchlist in cfg["lists"]:
+            list_name = watchlist["name"]
+            scan_tfs = signals.watchlist_scan_timeframes(watchlist)
+            for symbol in watchlist["symbols"]:
+                for timeframe in scan_tfs:
+                    df = get_bars(symbol, timeframe)
+                    if df is None:
+                        continue
+
+                    found = detect_all(df, watchlist["patterns"])
+                    bar_ts = str(df.index[-1])[:16].replace("T", " ")
+                    for pattern_id in found:
+                        key = signals.signal_key(symbol, timeframe, bar_ts, pattern_id)
+                        if key in sent:
                             continue
 
-                        found = detect_all(df, watchlist["patterns"])
-                        bar_ts = str(df.index[-1])[:16].replace("T", " ")
-                        for pattern_id in found:
-                            key = signals.signal_key(symbol, timeframe, bar_ts, pattern_id)
-                            if key in sent:
-                                continue
+                        levels = build_levels(df, pattern_id)
+                        message = build_message(symbol, timeframe, pattern_id, bar_ts, levels)
+                        try:
+                            photo = render_candles(
+                                df, symbol, timeframe, PATTERNS[pattern_id]["label"], PATTERNS[pattern_id]["direction"]
+                            )
+                        except Exception as exc:
+                            logger.warning("chart render failed for %s: %s", key, exc)
+                            photo = None
 
-                            levels = build_levels(df, pattern_id)
-                            message = build_message(symbol, timeframe, pattern_id, bar_ts, levels)
-                            try:
-                                photo = render_candles(df, symbol, timeframe, PATTERNS[pattern_id]["label"], PATTERNS[pattern_id]["direction"])
-                            except Exception as exc:
-                                logger.warning("chart render failed for %s: %s", key, exc)
-                                photo = None
+                        if not _try_deliver_alert(watchlist, timeframe, key, message, photo, token, chat_ids):
+                            continue
 
-                            ok = signals.tg_send(token, chat_ids, text=message, photo=photo)
-                            if ok:
-                                entry = {
-                                    "key": key,
-                                    "ts": datetime.now(NY).isoformat(timespec="seconds"),
-                                    "list": list_name,
-                                    "symbol": symbol,
-                                    "timeframe": timeframe,
-                                    "pattern_id": pattern_id,
-                                    "label": PATTERNS[pattern_id]["label"],
-                                    "direction": PATTERNS[pattern_id]["direction"],
-                                    "close": levels["entry"],
-                                    "entry": levels["entry"],
-                                    "stop": levels["stop"],
-                                    "target": levels["target"],
-                                    "bar_ts": bar_ts,
-                                }
-                                signals.append_signal(entry)
-                                sent.add(key)
-                                logger.info("SIGNAL %s (list: %s)", key, list_name)
-                                route = watchlist.get("discord_route")
-                                dc_url = signals.discord_webhook_url(route) if route else None
-                                if dc_url and not signals.dc_send(dc_url, text=message, photo=photo):
-                                    logger.warning(
-                                        "Discord send failed for %s (route=%s)", key, route
-                                    )
-                            else:
-                                logger.error("Telegram send failed for %s (will retry next cycle)", key)
+                        entry = {
+                            "key": key,
+                            "ts": datetime.now(NY).isoformat(timespec="seconds"),
+                            "list": list_name,
+                            "symbol": symbol,
+                            "timeframe": timeframe,
+                            "pattern_id": pattern_id,
+                            "label": PATTERNS[pattern_id]["label"],
+                            "direction": PATTERNS[pattern_id]["direction"],
+                            "close": levels["entry"],
+                            "entry": levels["entry"],
+                            "stop": levels["stop"],
+                            "target": levels["target"],
+                            "bar_ts": bar_ts,
+                        }
+                        signals.append_signal(entry)
+                        sent.add(key)
+                        logger.info("SIGNAL %s (list: %s)", key, list_name)
 
         logger.info(
             "cycle done in %.1fs (%d watchlists)",
