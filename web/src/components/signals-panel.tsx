@@ -36,13 +36,27 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   saveSignalsConfig,
+  sendDiscordSignalTest,
   sendSignalTest,
   useSignalsConfig,
   useSignalsHistory,
   useSignalsStatus,
 } from "@/hooks/use-signals";
 import { cn } from "@/lib/utils";
-import { TIMEFRAMES, type SignalPattern, type SignalsConfig, type WatchList } from "@/lib/schemas";
+import {
+  TIMEFRAMES,
+  type DiscordRoute,
+  type SignalPattern,
+  type SignalsConfig,
+  type WatchList,
+} from "@/lib/schemas";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const SYMBOL_RE = /^[A-Za-z0-9.\-]{1,12}$/;
 
@@ -228,7 +242,7 @@ function SignalsFormCard({ config, patterns, onSaved }: {
       <CardHeader>
         <CardTitle className="text-sm">Signal watchlists</CardTitle>
         <CardDescription>
-          Each list has its own tickers, timeframes and patterns. Alerts land in Telegram with a chart image.
+          Each list has its own tickers, timeframes and patterns. Alerts go to Telegram; optionally mirror to a Discord channel per list.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -311,6 +325,31 @@ function SignalsFormCard({ config, patterns, onSaved }: {
               />
 
               <Field>
+                <FieldLabel>Discord channel</FieldLabel>
+                <Select
+                  value={selected.discord_route ?? "none"}
+                  onValueChange={(v) =>
+                    patchSelected({
+                      discord_route: v === "none" ? null : (v as DiscordRoute),
+                    })
+                  }
+                >
+                  <SelectTrigger className="w-full" size="default">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="w-full">
+                    <SelectItem value="none">None</SelectItem>
+                    <SelectItem value="day">Day trade</SelectItem>
+                    <SelectItem value="hour">Hour trade</SelectItem>
+                    <SelectItem value="week">Week trade</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Uses the matching webhook from <code className="font-mono">.env</code>
+                </p>
+              </Field>
+
+              <Field>
                 <FieldLabel>Timeframes</FieldLabel>
                 <ToggleGroup
                   multiple
@@ -369,11 +408,18 @@ function SignalsFormCard({ config, patterns, onSaved }: {
   );
 }
 
+const DISCORD_TEST_ROUTES: { route: DiscordRoute; label: string }[] = [
+  { route: "day", label: "Day trade" },
+  { route: "hour", label: "Hour trade" },
+  { route: "week", label: "Week trade" },
+];
+
 export function SignalsPanel() {
   const { data: cfgData, mutate: mutateConfig } = useSignalsConfig();
   const { data: status } = useSignalsStatus();
   const { data: history } = useSignalsHistory(50);
   const [testing, setTesting] = useState(false);
+  const [discordTesting, setDiscordTesting] = useState<DiscordRoute | null>(null);
 
   const onTest = async () => {
     setTesting(true);
@@ -384,6 +430,18 @@ export function SignalsPanel() {
       toast.error(e instanceof Error ? e.message : "Test failed");
     } finally {
       setTesting(false);
+    }
+  };
+
+  const onDiscordTest = async (route: DiscordRoute) => {
+    setDiscordTesting(route);
+    try {
+      await sendDiscordSignalTest(route);
+      toast.success(`Test sent - check Discord (${route})`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Test failed");
+    } finally {
+      setDiscordTesting(null);
     }
   };
 
@@ -414,7 +472,7 @@ export function SignalsPanel() {
           <CardHeader>
             <CardTitle className="text-sm">Signal bot</CardTitle>
             <CardDescription>
-              Listens for completed candles and pushes pattern alerts to Telegram
+              Listens for completed candles and pushes pattern alerts (Telegram + optional Discord per watchlist)
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-wrap items-center gap-2">
@@ -424,11 +482,6 @@ export function SignalsPanel() {
               ) : null}
               {status?.running ? "Listening" : "Not running"}
             </Badge>
-            {cfgData && (
-              <Badge variant={cfgData.telegram_configured ? "secondary" : "destructive"}>
-                Telegram {cfgData.telegram_configured ? "configured" : "missing keys"}
-              </Badge>
-            )}
             {status?.last_check && (
               <span className="text-xs text-muted-foreground">
                 last check{" "}
@@ -437,6 +490,20 @@ export function SignalsPanel() {
                   ? ` (${Math.round(status.heartbeat_age_s)}s ago)`
                   : ""}
               </span>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Telegram</CardTitle>
+            <CardDescription>All watchlists share the same bot token and chat id</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-wrap items-center gap-2">
+            {cfgData && (
+              <Badge variant={cfgData.telegram_configured ? "secondary" : "destructive"}>
+                {cfgData.telegram_configured ? "Configured" : "Missing TELEGRAM_* in .env"}
+              </Badge>
             )}
             <div className="ml-auto">
               <Button type="button" variant="outline" size="sm" onClick={onTest} disabled={testing}>
@@ -447,6 +514,44 @@ export function SignalsPanel() {
                 )}
                 {testing ? "Sending…" : "Send test"}
               </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Discord webhooks</CardTitle>
+            <CardDescription>Day / hour / week channels — set per watchlist above</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex flex-wrap gap-2">
+              {DISCORD_TEST_ROUTES.map(({ route, label }) => {
+                const ok = cfgData?.discord_configured?.[route];
+                return (
+                  <Badge key={route} variant={ok ? "secondary" : "destructive"}>
+                    {label} {ok ? "configured" : "missing webhook"}
+                  </Badge>
+                );
+              })}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {DISCORD_TEST_ROUTES.map(({ route, label }) => {
+                const configured = cfgData?.discord_configured?.[route];
+                const busy = discordTesting === route;
+                return (
+                  <Button
+                    key={route}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!configured || busy || discordTesting !== null}
+                    onClick={() => onDiscordTest(route)}
+                  >
+                    {busy ? <Spinner data-icon="inline-start" /> : null}
+                    {busy ? "Sending…" : `Test ${label.toLowerCase()}`}
+                  </Button>
+                );
+              })}
             </div>
           </CardContent>
         </Card>

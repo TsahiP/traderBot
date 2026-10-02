@@ -1,5 +1,5 @@
 """Shared state for the signal bot and the API: config file, sent-signal log,
-heartbeat, and the Telegram send helpers. Both dashboard.py and signalbot.py
+heartbeat, and Telegram / Discord send helpers. Both dashboard.py and signalbot.py
 import from here so they never disagree about where things live.
 """
 import json
@@ -7,6 +7,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 import config
 from candle_patterns import PATTERNS
@@ -14,6 +15,14 @@ from candle_patterns import PATTERNS
 VALID_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "1d"]
 _SYMBOL_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
 _ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
+
+DiscordRoute = Literal["day", "hour", "week"]
+DISCORD_ROUTES: tuple[DiscordRoute, ...] = ("day", "hour", "week")
+DISCORD_ROUTE_ENV: dict[DiscordRoute, str] = {
+    "day": "DISCORD_WEBHOOK_DAY_TRADE",
+    "hour": "DISCORD_WEBHOOK_HOUR_TRADE",
+    "week": "DISCORD_WEBHOOK_WEEK_TRADE",
+}
 
 
 def _default_list() -> dict:
@@ -56,6 +65,17 @@ def _clean_timeframes(tfs) -> list[str]:
         if tf not in VALID_TIMEFRAMES:
             raise ValueError(f"Unknown timeframe '{tf}' - use {', '.join(VALID_TIMEFRAMES)}")
     return list(dict.fromkeys(tfs))
+
+
+def _clean_discord_route(raw) -> str | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    route = str(raw).strip().lower()
+    if route not in DISCORD_ROUTES:
+        raise ValueError(f"discord_route must be one of {', '.join(DISCORD_ROUTES)} or null")
+    return route
 
 
 def _clean_patterns(pats) -> list[str]:
@@ -155,16 +175,20 @@ def validate_config(cfg) -> dict:
             symbols = _clean_symbols(item.get("symbols"))
             timeframes = _clean_timeframes(item.get("timeframes"))
             patterns = _clean_patterns(item.get("patterns"))
+            discord_route = _clean_discord_route(item.get("discord_route"))
         except ValueError as exc:
             raise ValueError(f"{label}: {exc}") from exc
 
-        out_lists.append({
+        out_item = {
             "id": list_id,
             "name": name,
             "symbols": symbols,
             "timeframes": timeframes,
             "patterns": patterns,
-        })
+        }
+        if discord_route is not None:
+            out_item["discord_route"] = discord_route
+        out_lists.append(out_item)
 
     try:
         poll = int(cfg.get("poll_minutes", 5))
@@ -275,3 +299,36 @@ def tg_send(token: str, chat_ids: list[str], text: str | None = None,
         except Exception:
             ok_all = False
     return ok_all
+
+
+# ---- Discord (incoming webhooks) ----
+
+def discord_webhook_url(route: str | None) -> str | None:
+    if route not in DISCORD_ROUTES:
+        return None
+    url = (os.getenv(DISCORD_ROUTE_ENV[route]) or "").strip()
+    return url or None
+
+
+def discord_configured() -> dict[str, bool]:
+    return {r: bool(discord_webhook_url(r)) for r in DISCORD_ROUTES}
+
+
+def dc_send(webhook_url: str, text: str | None = None, photo: bytes | None = None) -> bool:
+    """Post to a Discord incoming webhook. True on HTTP 2xx."""
+    import requests
+
+    try:
+        if photo is not None:
+            payload = {"content": text or ""}
+            r = requests.post(
+                webhook_url,
+                data={"payload_json": json.dumps(payload)},
+                files={"file": ("signal.png", photo, "image/png")},
+                timeout=30,
+            )
+        else:
+            r = requests.post(webhook_url, json={"content": text or ""}, timeout=30)
+        return r.ok
+    except Exception:
+        return False

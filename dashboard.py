@@ -608,6 +608,7 @@ def api_signals_config():
             {"id": pid, **meta} for pid, meta in SIGNAL_PATTERNS.items()
         ],
         "telegram_configured": bool(token and signals.telegram_chat_ids()),
+        "discord_configured": signals.discord_configured(),
     })
 
 
@@ -660,6 +661,21 @@ def api_signals_test():
     ok = signals.tg_send(token, chat_ids, text="tradebot signal test - Telegram is wired up")
     if not ok:
         return jsonify({"error": "Telegram rejected the message - check token/chat id and network"}), 502
+    return jsonify({"ok": True})
+
+
+@app.route("/api/signals/discord-test", methods=["POST"])
+def api_signals_discord_test():
+    body = request.get_json(silent=True) or {}
+    route = str(body.get("route", "")).strip().lower()
+    if route not in signals.DISCORD_ROUTES:
+        return jsonify({"error": "route must be day, hour, or week"}), 400
+    url = signals.discord_webhook_url(route)
+    if not url:
+        return jsonify({"error": f"{signals.DISCORD_ROUTE_ENV[route]} missing in .env"}), 400
+    ok = signals.dc_send(url, text=f"tradebot signal test - Discord {route} is wired up")
+    if not ok:
+        return jsonify({"error": "Discord rejected the message - check webhook URL and network"}), 502
     return jsonify({"ok": True})
 
 

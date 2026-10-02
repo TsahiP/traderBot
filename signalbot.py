@@ -171,6 +171,12 @@ def main() -> None:
                                 signals.append_signal(entry)
                                 sent.add(key)
                                 logger.info("SIGNAL %s (list: %s)", key, list_name)
+                                route = watchlist.get("discord_route")
+                                dc_url = signals.discord_webhook_url(route) if route else None
+                                if dc_url and not signals.dc_send(dc_url, text=message, photo=photo):
+                                    logger.warning(
+                                        "Discord send failed for %s (route=%s)", key, route
+                                    )
                             else:
                                 logger.error("Telegram send failed for %s (will retry next cycle)", key)
 

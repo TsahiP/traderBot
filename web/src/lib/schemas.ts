@@ -192,12 +192,16 @@ export const SignalPattern = z.object({
 });
 export type SignalPattern = z.infer<typeof SignalPattern>;
 
+export const DiscordRoute = z.enum(["day", "hour", "week"]);
+export type DiscordRoute = z.infer<typeof DiscordRoute>;
+
 export const WatchList = z.object({
   id: z.string(),
   name: z.string(),
   symbols: z.array(z.string()),
   timeframes: z.array(z.string()),
   patterns: z.array(z.string()),
+  discord_route: DiscordRoute.nullable().optional(),
 });
 export type WatchList = z.infer<typeof WatchList>;
 
@@ -207,10 +211,18 @@ export const SignalsConfig = z.object({
 });
 export type SignalsConfig = z.infer<typeof SignalsConfig>;
 
+export const DiscordConfigured = z.object({
+  day: z.boolean(),
+  hour: z.boolean(),
+  week: z.boolean(),
+});
+export type DiscordConfigured = z.infer<typeof DiscordConfigured>;
+
 export const SignalsConfigResponse = z.object({
   config: SignalsConfig,
   patterns: z.array(SignalPattern),
   telegram_configured: z.boolean(),
+  discord_configured: DiscordConfigured,
 });
 export type SignalsConfigResponse = z.infer<typeof SignalsConfigResponse>;
 

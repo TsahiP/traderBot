@@ -74,7 +74,7 @@ npm run dev            # UI on http://localhost:3000
 
 The frontend is a Next.js 15+ app (shadcn/ui, SWR, zod) in `web/` — it proxies
 `/api/*` to the Flask API, so the Python engine stays the single source of
-truth. Two tabs:
+truth. Main areas:
 
 - **Dashboard** — sticky ticker tape (last close, SMAs, live signal), stat
   cards (account equity, position, realized P&L, win rate), equity curve
@@ -84,10 +84,54 @@ truth. Two tabs:
   ▲ buy / ▼ sell markers where the logic fires, volume bars, metrics and the
   full trade list. Inputs are validated with zod; API responses are schema
   checked on every fetch.
+- **Signals** — configure candlestick-pattern watchlists (symbols, timeframes,
+  patterns). The signal bot pushes alerts with a chart image when a pattern
+  completes on the last closed bar. Delivery is **Telegram** for every list,
+  plus an optional **Discord** channel per watchlist (day / hour / week trade
+  rooms). The UI has separate Telegram and Discord panels with test buttons for
+  each webhook route.
 
 Works with or without Alpaca keys — without them the tape falls back to the
 latest backtest bar. Run `livebot.py` alongside and watch paper trades appear
 as the bot opens and closes them.
+
+## 4. Signal bot (optional)
+
+Watches your watchlists from the **Signals** tab and sends pattern alerts
+(text + PNG chart). Config lives in `output/signal_config.json` and is re-read
+every cycle — save in the UI and the bot picks it up without a restart.
+
+```powershell
+python signalbot.py
+```
+
+Logs: `logs/signalbot.log`. Stop with `Ctrl+C`.
+
+**Telegram** (required for the bot to run today): set in `.env`:
+
+| Variable | Purpose |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_CHAT_ID` | Target chat or channel id (comma/space for multiple) |
+
+Use **Send test** on the Telegram card in the UI to verify.
+
+**Discord** (optional, parallel to Telegram — same message and chart after a
+successful Telegram send). Add incoming-webhook URLs to `.env` (never commit
+them):
+
+| Variable | Channel |
+|---|---|
+| `DISCORD_WEBHOOK_DAY_TRADE` | Day-trade room |
+| `DISCORD_WEBHOOK_HOUR_TRADE` | Hour-trade room |
+| `DISCORD_WEBHOOK_WEEK_TRADE` | Week-trade room |
+
+In each watchlist, choose **Discord channel**: None, Day trade, Hour trade, or
+Week trade. Use **Test day / hour / week** on the Discord card to verify each
+webhook. Discord failures are logged only; dedupe and history still follow
+Telegram success.
+
+More detail: `RUN.md` and `HANDSOFF.md`.
 
 ## Configuration (`config.py`)
 
