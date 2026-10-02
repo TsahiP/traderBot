@@ -13,15 +13,21 @@ from candle_patterns import PATTERNS
 
 VALID_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "1d"]
 _SYMBOL_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
+_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 
 
-def default_config() -> dict:
+def _default_list() -> dict:
     return {
+        "id": "default",
+        "name": "Default",
         "symbols": ["SPY"],
         "timeframes": ["1d"],
         "patterns": list(PATTERNS.keys()),
-        "poll_minutes": 5,
     }
+
+
+def default_config() -> dict:
+    return {"poll_minutes": 5, "lists": [_default_list()]}
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -30,27 +36,7 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def load_config() -> dict:
-    """Read the config file; fall back to defaults for a missing/corrupt file."""
-    path = config.SIGNAL_CONFIG_PATH
-    if not path.exists():
-        return default_config()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return default_config()
-    base = default_config()
-    for key in base:
-        if key in raw and isinstance(raw[key], type(base[key])):
-            base[key] = raw[key]
-    return base
-
-
-def validate_config(cfg) -> dict:
-    """Coerce + validate a raw config (from the API). Raises ValueError."""
-    out = default_config()
-
-    symbols = cfg.get("symbols")
+def _clean_symbols(symbols) -> list[str]:
     if not isinstance(symbols, list) or not symbols:
         raise ValueError("At least one symbol is required")
     clean = []
@@ -60,23 +46,125 @@ def validate_config(cfg) -> dict:
             raise ValueError(f"Invalid symbol '{s}' - letters, digits, dots and dashes only")
         if s not in clean:
             clean.append(s)
-    out["symbols"] = clean
+    return clean
 
-    tfs = cfg.get("timeframes")
+
+def _clean_timeframes(tfs) -> list[str]:
     if not isinstance(tfs, list) or not tfs:
         raise ValueError("At least one timeframe is required")
     for tf in tfs:
         if tf not in VALID_TIMEFRAMES:
             raise ValueError(f"Unknown timeframe '{tf}' - use {', '.join(VALID_TIMEFRAMES)}")
-    out["timeframes"] = list(dict.fromkeys(tfs))
+    return list(dict.fromkeys(tfs))
 
-    pats = cfg.get("patterns")
+
+def _clean_patterns(pats) -> list[str]:
     if not isinstance(pats, list) or not pats:
         raise ValueError("At least one pattern is required")
     for pid in pats:
         if pid not in PATTERNS:
             raise ValueError(f"Unknown pattern '{pid}'")
-    out["patterns"] = list(dict.fromkeys(pats))
+    return list(dict.fromkeys(pats))
+
+
+def _slug_id(name: str, used: set[str]) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "list"
+    base = base[:32].strip("-") or "list"
+    candidate = base
+    n = 2
+    while candidate in used or not _ID_RE.match(candidate):
+        suffix = f"-{n}"
+        candidate = f"{base[:32 - len(suffix)]}{suffix}"
+        n += 1
+    return candidate
+
+
+def _migrate_flat(raw: dict) -> dict:
+    """Old single-watchlist file -> one list named Default."""
+    return {
+        "poll_minutes": raw.get("poll_minutes", 5),
+        "lists": [{
+            "id": "default",
+            "name": "Default",
+            "symbols": raw.get("symbols", ["SPY"]),
+            "timeframes": raw.get("timeframes", ["1d"]),
+            "patterns": raw.get("patterns", list(PATTERNS.keys())),
+        }],
+    }
+
+
+def load_config() -> dict:
+    """Read the config file; fall back to defaults for a missing/corrupt file.
+
+    A flat file (symbols/timeframes/patterns, no lists) loads as one Default list.
+    The file itself is rewritten only on the next save.
+    """
+    path = config.SIGNAL_CONFIG_PATH
+    if not path.exists():
+        return default_config()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return default_config()
+    if not isinstance(raw, dict):
+        return default_config()
+    if "lists" not in raw and "symbols" in raw:
+        raw = _migrate_flat(raw)
+    try:
+        return validate_config(raw)
+    except ValueError:
+        return default_config()
+
+
+def validate_config(cfg) -> dict:
+    """Coerce + validate a raw config (from the API). Raises ValueError."""
+    if not isinstance(cfg, dict):
+        raise ValueError("Config must be an object")
+
+    lists = cfg.get("lists")
+    if not isinstance(lists, list) or not lists:
+        raise ValueError("At least one watchlist is required")
+
+    out_lists = []
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
+    for i, item in enumerate(lists):
+        if not isinstance(item, dict):
+            raise ValueError(f"Watchlist {i + 1} must be an object")
+        name = str(item.get("name", "")).strip()
+        if not name:
+            raise ValueError(f"Watchlist {i + 1} needs a name")
+        name_key = name.casefold()
+        if name_key in seen_names:
+            raise ValueError(f"Duplicate watchlist name '{name}'")
+        seen_names.add(name_key)
+
+        raw_id = str(item.get("id") or "").strip().lower()
+        if raw_id:
+            if not _ID_RE.match(raw_id):
+                raise ValueError(f"Invalid watchlist id '{raw_id}'")
+            if raw_id in seen_ids:
+                raise ValueError(f"Duplicate watchlist id '{raw_id}'")
+            list_id = raw_id
+        else:
+            list_id = _slug_id(name, seen_ids)
+        seen_ids.add(list_id)
+
+        label = f"Watchlist '{name}'"
+        try:
+            symbols = _clean_symbols(item.get("symbols"))
+            timeframes = _clean_timeframes(item.get("timeframes"))
+            patterns = _clean_patterns(item.get("patterns"))
+        except ValueError as exc:
+            raise ValueError(f"{label}: {exc}") from exc
+
+        out_lists.append({
+            "id": list_id,
+            "name": name,
+            "symbols": symbols,
+            "timeframes": timeframes,
+            "patterns": patterns,
+        })
 
     try:
         poll = int(cfg.get("poll_minutes", 5))
@@ -84,9 +172,8 @@ def validate_config(cfg) -> dict:
         raise ValueError("Poll interval must be a whole number of minutes")
     if not 1 <= poll <= 60:
         raise ValueError("Poll interval must be 1-60 minutes")
-    out["poll_minutes"] = poll
 
-    return out
+    return {"poll_minutes": poll, "lists": out_lists}
 
 
 def save_config(raw) -> dict:

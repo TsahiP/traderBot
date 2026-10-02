@@ -131,7 +131,7 @@ tradebot/
 | `output/data_<SYM>.csv` | `backtest.py` | raw OHLCV bars used by the run |
 | `output/live_trades.csv` | `livebot.py` | paper round trips appended live (dashboard "LIVE" rows) |
 | `logs/bot.log` | `livebot.py` | every signal/order/fill |
-| `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | watchlist: symbols, timeframes, pattern ids, poll_minutes — re-read by `signalbot.py` every cycle; delete to reset to defaults (SPY, 1d, all patterns) |
+| `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{poll_minutes, lists: [{id, name, symbols, timeframes, patterns}]}` — each list is its own watchlist; old flat files load as one list named Default; re-read by `signalbot.py` every cycle; delete to reset to defaults (one Default list: SPY, 1d, all patterns) |
 | `output/signal_log.json` | `signalbot.py` | every sent alert incl. its dedupe key (`SYMBOL\|tf\|bar_ts\|pattern`) — retried on Telegram failure until it lands; capped at 1000 entries |
 | `output/signal_heartbeat.json` | `signalbot.py` | `{ts, poll_minutes}` of the last cycle start — `/api/signals/status` derives "running" from its age (< poll + 90 s) |
 | `logs/signalbot.log` | `signalbot.py` | one line per cycle + every SIGNAL sent |
@@ -151,10 +151,10 @@ if you regenerate the file differently.
 | `GET /api/strategies` | — | registry `[{id, label, description, timeframes[], flat_eod, default_allow_short, default_timeframe, params[{key,label,min,max,step,default,int?,unit?}]}]` — drives the lab form |
 | `GET /api/backtest/run` | `symbol` (def SPY) `strategy` (def sma_crossover) `timeframe` (def 1d) `start` `end` (optional `YYYY-MM-DD`, inclusive; intraday requests clamped to the data window) `qty` `capital` `allow_short` (`true`/`false`) `cost_per_share` + per-strategy params (`fast`,`slow`,`deviation_pct`,`exit_pct`,`range_minutes`,`tp_mult`,`sl_mult`,`max_range_pct`,`rsi_period`,`oversold`,`overbought`,`exit_level`) | `{meta, metrics{...costs_total}, series{OHLCV+smas+equity ≤800 bars}, markers[{index, date, side: buy\|sell, eod?, price}], trades[{..., side, exit_type: signal\|eod, costs}]}` |
 | `POST /api/analyze` | JSON body = same params as `/api/backtest/run` | re-runs the backtest, digests results + allowed param ranges, and returns `{model, analysis}` from the local LLM (`503` when LM Studio is unreachable) |
-| `GET /api/signals/config` | — | `{config: {symbols[], timeframes[], patterns[], poll_minutes}, patterns: [{id, label, direction, bars}], telegram_configured}` |
-| `POST /api/signals/config` | JSON body = same shape as `config` (symbols uppercased/deduped server-side) | validates against known timeframes (`1m 5m 15m 30m 1h 1d`) and pattern ids, writes `output/signal_config.json`, returns the saved config; `400` with a message on bad input |
+| `GET /api/signals/config` | — | `{config: {poll_minutes, lists: [{id, name, symbols[], timeframes[], patterns[]}]}, patterns: [{id, label, direction, bars}], telegram_configured}` |
+| `POST /api/signals/config` | JSON body = same shape as `config` (symbols uppercased/deduped, list ids/names unique) | validates timeframes (`1m 5m 15m 30m 1h 1d`) and pattern ids, writes `output/signal_config.json`, returns the saved config; `400` with a message on bad input |
 | `GET /api/signals/status` | — | `{running, last_check?, heartbeat_age_s?, poll_minutes?}` from the heartbeat file |
-| `GET /api/signals/history` | `limit` (def 50) | `{signals: [...]}` newest first — every alert ever sent (key, ts, symbol, timeframe, pattern_id, label, direction, close/entry/stop/target, bar_ts) |
+| `GET /api/signals/history` | `limit` (def 50) | `{signals: [...]}` newest first — every alert ever sent (key, ts, list, symbol, timeframe, pattern_id, label, direction, close/entry/stop/target, bar_ts) |
 | `POST /api/signals/test` | — | sends a plain "test" message to Telegram so you can verify the keys; `{ok}` or `502` with the API error |
 
 Data windows per timeframe: `1d` → `BACKTEST_START` (2009); `1m` → 7 days;

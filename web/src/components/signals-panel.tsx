@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { BellRing, X } from "lucide-react";
+import { BellRing, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -41,7 +41,8 @@ import {
   useSignalsHistory,
   useSignalsStatus,
 } from "@/hooks/use-signals";
-import { TIMEFRAMES, type SignalPattern, type SignalsConfig } from "@/lib/schemas";
+import { cn } from "@/lib/utils";
+import { TIMEFRAMES, type SignalPattern, type SignalsConfig, type WatchList } from "@/lib/schemas";
 
 const SYMBOL_RE = /^[A-Za-z0-9.\-]{1,12}$/;
 
@@ -116,34 +117,91 @@ function SymbolsField({ symbols, setSymbols }: {
   );
 }
 
+function slugId(name: string, used: Set<string>): string {
+  let base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "list";
+  base = base.slice(0, 32).replace(/-+$/g, "") || "list";
+  let id = base;
+  let n = 2;
+  while (used.has(id)) {
+    const suffix = `-${n}`;
+    id = `${base.slice(0, 32 - suffix.length)}${suffix}`;
+    n += 1;
+  }
+  return id;
+}
+
 function SignalsFormCard({ config, patterns, onSaved }: {
   config: SignalsConfig;
   patterns: SignalPattern[];
   onSaved: () => void | Promise<unknown>;
 }) {
-  const [symbols, setSymbols] = useState(config.symbols);
-  const [timeframes, setTimeframes] = useState<string[]>(config.timeframes);
-  const [patternsOn, setPatternsOn] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(patterns.map((p) => [p.id, config.patterns.includes(p.id)])),
-  );
+  const [lists, setLists] = useState<WatchList[]>(config.lists);
+  const [selectedId, setSelectedId] = useState(config.lists[0]?.id ?? "");
   const [pollMinutes, setPollMinutes] = useState(config.poll_minutes);
+  const [newName, setNewName] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const togglePattern = (id: string) =>
-    setPatternsOn((p) => ({ ...p, [id]: !p[id] }));
+  const selected = lists.find((l) => l.id === selectedId) ?? lists[0];
+
+  const patchSelected = (patch: Partial<WatchList>) => {
+    if (!selected) return;
+    setLists((prev) => prev.map((l) => (l.id === selected.id ? { ...l, ...patch } : l)));
+  };
+
+  const addList = () => {
+    const name = newName.trim();
+    if (!name) return;
+    if (lists.some((l) => l.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      toast.error("Watchlist name already used");
+      return;
+    }
+    const id = slugId(name, new Set(lists.map((l) => l.id)));
+    const created: WatchList = {
+      id,
+      name,
+      symbols: ["SPY"],
+      timeframes: ["1d"],
+      patterns: patterns.map((p) => p.id),
+    };
+    setLists((prev) => [...prev, created]);
+    setSelectedId(id);
+    setNewName("");
+  };
+
+  const removeSelected = () => {
+    if (!selected || lists.length < 2) return;
+    const next = lists.filter((l) => l.id !== selected.id);
+    setLists(next);
+    setSelectedId(next[0].id);
+  };
 
   const onSave = async () => {
-    if (!symbols.length || !timeframes.length || !Object.values(patternsOn).some(Boolean)) {
-      toast.error("Pick at least one symbol, timeframe and pattern");
+    if (pollMinutes < 1 || pollMinutes > 60) {
+      toast.error("Poll interval must be 1-60 minutes");
       return;
+    }
+    const names = new Set<string>();
+    for (const list of lists) {
+      const key = list.name.trim().toLocaleLowerCase();
+      if (!list.name.trim()) {
+        toast.error("Every watchlist needs a name");
+        return;
+      }
+      if (names.has(key)) {
+        toast.error(`Duplicate watchlist name '${list.name.trim()}'`);
+        return;
+      }
+      names.add(key);
+      if (!list.symbols.length || !list.timeframes.length || !list.patterns.length) {
+        toast.error(`'${list.name}' needs a symbol, timeframe and pattern`);
+        return;
+      }
     }
     setSaving(true);
     try {
       await saveSignalsConfig({
-        symbols,
-        timeframes,
-        patterns: Object.keys(patternsOn).filter((k) => patternsOn[k]),
         poll_minutes: pollMinutes,
+        lists: lists.map((l) => ({ ...l, name: l.name.trim() })),
       });
       await onSaved();
       toast.success("Saved - the bot picks it up on its next cycle");
@@ -157,66 +215,24 @@ function SignalsFormCard({ config, patterns, onSaved }: {
   const bullish = patterns.filter((p) => p.direction === "long");
   const bearish = patterns.filter((p) => p.direction === "short");
 
+  const togglePattern = (id: string) => {
+    if (!selected) return;
+    const on = new Set(selected.patterns);
+    if (on.has(id)) on.delete(id);
+    else on.add(id);
+    patchSelected({ patterns: patterns.map((p) => p.id).filter((pid) => on.has(pid)) });
+  };
+
   return (
     <Card className="h-fit">
       <CardHeader>
-        <CardTitle className="text-sm">Signal watchlist</CardTitle>
+        <CardTitle className="text-sm">Signal watchlists</CardTitle>
         <CardDescription>
-          Which tickers, timeframes and patterns the bot listens for - alerts
-          land in Telegram with a chart image
+          Each list has its own tickers, timeframes and patterns. Alerts land in Telegram with a chart image.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <FieldGroup>
-          <SymbolsField symbols={symbols} setSymbols={setSymbols} />
-
-          <Field>
-            <FieldLabel>Timeframes</FieldLabel>
-            <ToggleGroup
-              multiple
-              value={timeframes}
-              onValueChange={(v) => setTimeframes([...(v as string[])])}
-            >
-              {TIMEFRAMES.map((tf) => (
-                <ToggleGroupItem key={tf} value={tf}>
-                  {tf}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
-          </Field>
-
-          <Field>
-            <FieldLabel>Bullish patterns</FieldLabel>
-            <div className="flex flex-col gap-2">
-              {bullish.map((p) => (
-                <div key={p.id} className="flex items-center justify-between gap-3">
-                  <span className="text-sm">{p.label}</span>
-                  <Switch
-                    size="sm"
-                    checked={!!patternsOn[p.id]}
-                    onCheckedChange={() => togglePattern(p.id)}
-                  />
-                </div>
-              ))}
-            </div>
-          </Field>
-
-          <Field>
-            <FieldLabel>Bearish patterns</FieldLabel>
-            <div className="flex flex-col gap-2">
-              {bearish.map((p) => (
-                <div key={p.id} className="flex items-center justify-between gap-3">
-                  <span className="text-sm">{p.label}</span>
-                  <Switch
-                    size="sm"
-                    checked={!!patternsOn[p.id]}
-                    onCheckedChange={() => togglePattern(p.id)}
-                  />
-                </div>
-              ))}
-            </div>
-          </Field>
-
           <Field data-invalid={pollMinutes < 1 || pollMinutes > 60}>
             <FieldLabel htmlFor="signal-poll">Poll interval (minutes)</FieldLabel>
             <Input
@@ -229,15 +245,124 @@ function SignalsFormCard({ config, patterns, onSaved }: {
               className="tabular-nums"
             />
           </Field>
+
+          <Field>
+            <FieldLabel>Watchlists</FieldLabel>
+            <div className="flex flex-col gap-1">
+              {lists.map((l) => (
+                <button
+                  key={l.id}
+                  type="button"
+                  onClick={() => setSelectedId(l.id)}
+                  className={cn(
+                    "rounded-md px-2 py-1.5 text-left text-sm",
+                    l.id === selected?.id ? "bg-muted font-medium" : "hover:bg-muted/60",
+                  )}
+                >
+                  {l.name || "Untitled"}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1.5">
+              <Input
+                aria-label="New watchlist name"
+                placeholder="New list"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addList();
+                  }
+                }}
+              />
+              <Button type="button" variant="outline" size="icon" aria-label="Add watchlist" onClick={addList}>
+                <Plus />
+              </Button>
+            </div>
+          </Field>
+
+          {selected && (
+            <>
+              <Field>
+                <FieldLabel htmlFor="list-name">Name</FieldLabel>
+                <div className="flex gap-1.5">
+                  <Input
+                    id="list-name"
+                    value={selected.name}
+                    onChange={(e) => patchSelected({ name: e.target.value })}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    aria-label="Delete watchlist"
+                    disabled={lists.length < 2}
+                    onClick={removeSelected}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              </Field>
+
+              <SymbolsField
+                symbols={selected.symbols}
+                setSymbols={(symbols) => patchSelected({ symbols })}
+              />
+
+              <Field>
+                <FieldLabel>Timeframes</FieldLabel>
+                <ToggleGroup
+                  multiple
+                  value={selected.timeframes}
+                  onValueChange={(v) => patchSelected({ timeframes: [...(v as string[])] })}
+                >
+                  {TIMEFRAMES.map((tf) => (
+                    <ToggleGroupItem key={tf} value={tf}>
+                      {tf}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </Field>
+
+              <Field>
+                <FieldLabel>Bullish patterns</FieldLabel>
+                <div className="flex flex-col gap-2">
+                  {bullish.map((p) => (
+                    <div key={p.id} className="flex items-center justify-between gap-3">
+                      <span className="text-sm">{p.label}</span>
+                      <Switch
+                        size="sm"
+                        checked={selected.patterns.includes(p.id)}
+                        onCheckedChange={() => togglePattern(p.id)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </Field>
+
+              <Field>
+                <FieldLabel>Bearish patterns</FieldLabel>
+                <div className="flex flex-col gap-2">
+                  {bearish.map((p) => (
+                    <div key={p.id} className="flex items-center justify-between gap-3">
+                      <span className="text-sm">{p.label}</span>
+                      <Switch
+                        size="sm"
+                        checked={selected.patterns.includes(p.id)}
+                        onCheckedChange={() => togglePattern(p.id)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </Field>
+            </>
+          )}
         </FieldGroup>
 
         <Button type="button" onClick={onSave} disabled={saving} className="mt-5 w-full">
-          {saving ? (
-            <Spinner data-icon="inline-start" />
-          ) : (
-            <BellRing data-icon="inline-start" />
-          )}
-          {saving ? "Saving…" : "Save watchlist"}
+          {saving ? <Spinner data-icon="inline-start" /> : <BellRing data-icon="inline-start" />}
+          {saving ? "Saving…" : "Save watchlists"}
         </Button>
       </CardContent>
     </Card>
@@ -265,7 +390,7 @@ export function SignalsPanel() {
   const signals = history?.signals ?? [];
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[300px_1fr]">
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[360px_1fr]">
       {cfgData ? (
         <SignalsFormCard
           key={JSON.stringify(cfgData.config)}
@@ -352,6 +477,7 @@ export function SignalsPanel() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Time</TableHead>
+                    <TableHead>List</TableHead>
                     <TableHead>Symbol</TableHead>
                     <TableHead>TF</TableHead>
                     <TableHead>Pattern</TableHead>
@@ -368,6 +494,7 @@ export function SignalsPanel() {
                       <TableCell className="whitespace-nowrap text-muted-foreground">
                         {new Date(s.ts).toLocaleString()}
                       </TableCell>
+                      <TableCell>{s.list ?? "—"}</TableCell>
                       <TableCell className="font-mono font-medium">{s.symbol}</TableCell>
                       <TableCell>{s.timeframe}</TableCell>
                       <TableCell>{s.label}</TableCell>

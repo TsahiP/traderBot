@@ -192,11 +192,18 @@ export const SignalPattern = z.object({
 });
 export type SignalPattern = z.infer<typeof SignalPattern>;
 
-export const SignalsConfig = z.object({
+export const WatchList = z.object({
+  id: z.string(),
+  name: z.string(),
   symbols: z.array(z.string()),
   timeframes: z.array(z.string()),
   patterns: z.array(z.string()),
+});
+export type WatchList = z.infer<typeof WatchList>;
+
+export const SignalsConfig = z.object({
   poll_minutes: z.number().int(),
+  lists: z.array(WatchList),
 });
 export type SignalsConfig = z.infer<typeof SignalsConfig>;
 
@@ -228,6 +235,7 @@ export const SignalEntry = z.object({
   stop: z.number().nullable(),
   target: z.number().nullable(),
   bar_ts: z.string(),
+  list: z.string().optional(),
 });
 export type SignalEntry = z.infer<typeof SignalEntry>;
 
