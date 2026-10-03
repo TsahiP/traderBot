@@ -46,6 +46,22 @@ def test_signal_key_includes_list_id():
     assert k.startswith("list-a|")
 
 
+def test_signal_already_sent_honors_legacy_keys():
+    legacy = signals.legacy_signal_key("SPY", "1d", "2026-01-01", "bullish_engulfing")
+    sent = {legacy}
+    assert signals.signal_already_sent(
+        sent, "default", "SPY", "1d", "2026-01-01", "bullish_engulfing"
+    )
+    new_key = signals.signal_key("tech", "SPY", "1d", "2026-01-01", "bullish_engulfing")
+    assert not signals.signal_already_sent(
+        sent, "tech", "SPY", "1d", "2026-01-01", "bullish_engulfing"
+    )
+    sent.add(new_key)
+    assert signals.signal_already_sent(
+        sent, "tech", "SPY", "1d", "2026-01-01", "bullish_engulfing"
+    )
+
+
 def test_next_run_1m_advances():
     after = datetime(2026, 1, 15, 10, 3, 20, tzinfo=NY)
     nxt = signals.next_run_after_timeframe("1m", after)

@@ -118,9 +118,9 @@ Logs: `logs/signalbot.log`. Stop with `Ctrl+C`.
 
 Use **Send test** on the Telegram card in the UI to verify.
 
-**Discord** (optional, parallel to Telegram — same message and chart after a
-successful Telegram send). Add incoming-webhook URLs to `.env` (never commit
-them):
+**Discord** (optional, per watchlist `discord_timeframes` — same message and
+chart as Telegram when both are selected for that bar). Add incoming-webhook URLs
+to `.env` (never commit them):
 
 | Variable | Channel |
 |---|---|
@@ -129,11 +129,12 @@ them):
 | `DISCORD_WEBHOOK_MINUTE_TRADE` | Minute-trade room |
 | `DISCORD_WEBHOOK_WEEK_TRADE` | Week-trade room |
 
-In each watchlist, choose **Discord channel**: None, Day trade, Hour trade,
-Minute trade, or Week trade. Discord **timeframes** include **`1w`** for weekly candles (Telegram does not).
-Use the test buttons on the Discord card to verify each
-webhook. Discord failures are logged only; dedupe and history still follow
-Telegram success.
+In each watchlist, pick **Discord timeframes** (multi-select; includes **`1w`**
+for weekly candles — Telegram does not). Timeframes map to the day/hour/minute/week
+webhooks above. Saved selections stay on disk even if a webhook is temporarily
+missing; the UI labels them and the bot retries delivery after you fix `.env`.
+Use the test buttons on the Discord card to verify each webhook. An alert is
+logged only after **all** channels selected for that timeframe succeed.
 
 More detail: `RUN.md` and `HANDSOFF.md`.
 

@@ -613,9 +613,21 @@ def api_signals_config():
     })
 
 
+def _json_object_body():
+    """Parse JSON body; reject non-objects with 400."""
+    body = request.get_json(silent=True)
+    if body is None:
+        return {}, None
+    if not isinstance(body, dict):
+        return None, (jsonify({"error": "JSON body must be an object"}), 400)
+    return body, None
+
+
 @app.route("/api/signals/config", methods=["POST"])
 def api_signals_config_save():
-    body = request.get_json(silent=True) or {}
+    body, err = _json_object_body()
+    if err:
+        return err
     try:
         cfg = signals.save_config(body)
     except ValueError as exc:

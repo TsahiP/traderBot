@@ -14,7 +14,7 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
 | Backend API | Python 3.12 · Flask | `dashboard.py`, port `8000`, API-only |
 | Strategy/engine | pandas | `strategies.py` (registry) + `engine.py` — single source of truth |
 | Live trading | alpaca-py (paper) | `livebot.py` |
-| Signal alerts | yfinance polling + matplotlib | `signalbot.py` — candlestick patterns → Telegram text + chart image |
+| Signal alerts | yfinance + bar-close scheduler + matplotlib | `signalbot.py` — candlestick patterns → Telegram + optional Discord (text + chart image) |
 | Historical data | yfinance | backtests, on-demand downloads |
 | Local LLM advisor | LM Studio (OpenAI-compatible) | `/api/analyze` re-runs a backtest and has the local model critique it |
 | Frontend | Next.js 16 (App Router) · TypeScript · Tailwind v4 | `web/`, port `3000` |
@@ -47,7 +47,7 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
                    output/live_trades.csv
 
  signalbot.py ── yfinance per (watchlist × symbol × timeframe) when each bar closes; config re-read each scheduler wake
-   candle_patterns.detect_all() on last closed bar → Telegram text + PNG chart
+   candle_patterns.detect_all() on last closed bar → Telegram and/or Discord text + PNG chart (per watchlist channel TFs)
    state: output/signal_config.json · signal_log.json (dedupe) · signal_heartbeat.json
  ```
 
@@ -134,7 +134,7 @@ tradebot/
 | `output/data_<SYM>.csv` | `backtest.py` | raw OHLCV bars used by the run |
 | `output/live_trades.csv` | `livebot.py` | paper round trips appended live (dashboard "LIVE" rows) |
 | `logs/bot.log` | `livebot.py` | every signal/order/fill |
-| `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{lists: [{id, name, symbols, telegram_timeframes[], discord_timeframes[], patterns}]}` — per-channel timeframe sets; legacy `timeframes` on a list (or flat file) applies to both channels on load; `discord_timeframes` may include `1w` (weekly bars, yfinance `1wk`; legacy `w` coerces to `1w`) and only TFs with a configured `DISCORD_WEBHOOK_*` env URL; Telegram timeframes do not include `1w`; each list is its own watchlist with its own scan schedule; legacy `poll_minutes` / `discord_route` on disk are stripped on save |
+| `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{lists: [{id, name, symbols, telegram_timeframes[], discord_timeframes[], patterns}]}` — per-channel timeframe sets; legacy `timeframes` on a list (or flat file) applies to both channels on load; `discord_timeframes` may include `1w` (weekly bars, yfinance `1wk`; legacy `w` coerces to `1w`) and may list TFs whose webhook is not yet set (UI shows “no webhook”; bot retries until env is wired); Telegram timeframes do not include `1w`; each list is its own watchlist with its own scan schedule; legacy `poll_minutes` / `discord_route` on disk are stripped on save |
 | `output/signal_log.json` | `signalbot.py` | every sent alert incl. dedupe key (`list_id\|SYMBOL\|tf\|bar_ts\|pattern`) — retried until required channel sends succeed; capped at 1000 entries |
 | `output/signal_heartbeat.json` | `signalbot.py` | `{ts}` of the last scheduler wake — `/api/signals/status` treats the bot as running when age &lt; `SIGNAL_HEARTBEAT_STALE_SECONDS` (120 s) |
 | `logs/signalbot.log` | `signalbot.py` | wake/idle, scan result per job, SIGNAL, dedupe/delivery warnings |
@@ -155,7 +155,7 @@ if you regenerate the file differently.
 | `GET /api/backtest/run` | `symbol` (def SPY) `strategy` (def sma_crossover) `timeframe` (def 1d) `start` `end` (optional `YYYY-MM-DD`, inclusive; intraday requests clamped to the data window) `qty` `capital` `allow_short` (`true`/`false`) `cost_per_share` + per-strategy params (`fast`,`slow`,`deviation_pct`,`exit_pct`,`range_minutes`,`tp_mult`,`sl_mult`,`max_range_pct`,`rsi_period`,`oversold`,`overbought`,`exit_level`) | `{meta, metrics{...costs_total}, series{OHLCV+smas+equity ≤800 bars}, markers[{index, date, side: buy\|sell, eod?, price}], trades[{..., side, exit_type: signal\|eod, costs}]}` |
 | `POST /api/analyze` | JSON body = same params as `/api/backtest/run` | re-runs the backtest, digests results + allowed param ranges, and returns `{model, analysis}` from the local LLM (`503` when LM Studio is unreachable) |
 | `GET /api/signals/config` | — | `{config: {lists: [...]}, patterns: [...], telegram_configured, discord_configured: {day, hour, minute, week}, discord_available_timeframes: string[]}` — Discord TF list = TFs whose webhook env is set (`1m`–`30m`→minute, `1h`→hour, `1d`→day, `1w`→week) |
-| `POST /api/signals/config` | JSON body = same shape as `config` (symbols uppercased/deduped, list ids/names unique; legacy `timeframes` fills both channel arrays if channel fields omitted) | validates Telegram timeframes (`1m 5m 15m 30m 1h 1d`), Discord timeframes (subset of available plus `1w` when week webhook set; may be empty), and pattern ids, writes `output/signal_config.json`, returns the saved config; `400` with a message on bad input |
+| `POST /api/signals/config` | JSON object = same shape as `config` (symbols uppercased/deduped, list ids/names unique; legacy `timeframes` fills both channel arrays if channel fields omitted) | validates Telegram timeframes (`1m 5m 15m 30m 1h 1d`), Discord timeframes (`1m`–`1w`; may be empty), and pattern ids, writes `output/signal_config.json`, returns the saved config; `400` if body is not a JSON object or validation fails |
 | `GET /api/signals/status` | — | `{running, last_check?, heartbeat_age_s?}` from the heartbeat file |
 | `GET /api/signals/history` | `limit` (def 50) | `{signals: [...]}` newest first — every alert ever sent (key, ts, list, symbol, timeframe, pattern_id, label, direction, close/entry/stop/target, bar_ts) |
 | `POST /api/signals/test` | — | sends a plain "test" message to Telegram so you can verify the keys; `{ok}` or `502` with the API error |
@@ -283,8 +283,11 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   1:2), sends Telegram for TFs in `telegram_timeframes` and Discord for TFs in
   `discord_timeframes` using automatic route mapping (`1d`→day webhook, etc.) —
   text + matplotlib PNG (`chart_image.py`, includes R:R overlay). Dedupe key
-  `list_id|SYMBOL|tf|bar_ts|pattern` is logged after all **required** channel
-  sends succeed.
+  `list_id|SYMBOL|tf|bar_ts|pattern` is logged after every **selected** channel
+  for that timeframe succeeds (Telegram and/or Discord); legacy dedupe keys
+  without `list_id|` still suppress re-sends after upgrade. Failed or
+  misconfigured channel sends are retried on the next scheduler wake (config is
+  re-read each wake).
 - **Crypto symbols:** on save/load, `BTC` and `ETH` normalize to yfinance spot
   tickers `BTC-USD` and `ETH-USD` (bare `BTC`/`ETH` on Yahoo are Grayscale ETFs).
 - **Verified end-to-end:** all five `/api/signals/*` endpoints (incl. 400 on bad

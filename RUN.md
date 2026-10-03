@@ -28,7 +28,7 @@ cd web && npm run dev
 ```bash
 .venv/bin/python signalbot.py
 ```
-- Needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` in `.env`. Optional Discord mirrors (per watchlist in the UI): `DISCORD_WEBHOOK_DAY_TRADE`, `DISCORD_WEBHOOK_HOUR_TRADE`, `DISCORD_WEBHOOK_MINUTE_TRADE`, `DISCORD_WEBHOOK_WEEK_TRADE` (full incoming-webhook URLs). Config is re-read every cycle, so edits in the UI apply without a restart. Logs go to `logs/signalbot.log`.
+- Needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` in `.env` for Telegram timeframes. Optional Discord (per watchlist `discord_timeframes` in the UI): `DISCORD_WEBHOOK_DAY_TRADE`, `DISCORD_WEBHOOK_HOUR_TRADE`, `DISCORD_WEBHOOK_MINUTE_TRADE`, `DISCORD_WEBHOOK_WEEK_TRADE` (full incoming-webhook URLs). The bot sleeps until the next bar close per job; config is re-read on each scheduler wake, so UI saves apply without a restart. Alerts retry until every selected channel for that timeframe delivers. Logs go to `logs/signalbot.log`.
 
 ## 7. Stop everything
 - Ctrl+C in each terminal, or: `lsof -ti tcp:8000 -sTCP:LISTEN | xargs kill` and `lsof -ti tcp:3000 -sTCP:LISTEN | xargs kill` (plus `pkill -f signalbot.py` / `pkill -f livebot.py`)

@@ -32,19 +32,19 @@ def test_discord_timeframes_available(monkeypatch):
     assert "1d" in signals.discord_timeframes_available()
 
 
-def test_validate_rejects_discord_tf_without_webhook(monkeypatch):
+def test_validate_allows_discord_tf_without_webhook(monkeypatch):
     monkeypatch.delenv("DISCORD_WEBHOOK_MINUTE_TRADE", raising=False)
-    with pytest.raises(ValueError, match="Discord webhook not configured"):
-        signals.validate_config({
-            "lists": [{
-                "id": "default",
-                "name": "Default",
-                "symbols": ["SPY"],
-                "telegram_timeframes": ["1d"],
-                "discord_timeframes": ["1m"],
-                "patterns": ["bullish_engulfing"],
-            }],
-        })
+    cfg = signals.validate_config({
+        "lists": [{
+            "id": "default",
+            "name": "Default",
+            "symbols": ["SPY"],
+            "telegram_timeframes": ["1d"],
+            "discord_timeframes": ["1m"],
+            "patterns": ["bullish_engulfing"],
+        }],
+    })
+    assert cfg["lists"][0]["discord_timeframes"] == ["1m"]
 
 
 def test_validate_allows_empty_discord_timeframes():

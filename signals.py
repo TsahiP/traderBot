@@ -189,18 +189,11 @@ def _clean_discord_timeframes(tfs) -> list[str]:
         raise ValueError("Discord timeframes must be a list")
     if not tfs:
         return []
-    cleaned = _clean_timeframes(
+    return _clean_timeframes(
         _coerce_discord_timeframe_list(tfs),
         "Discord timeframe",
         allowed=VALID_DISCORD_TIMEFRAMES,
     )
-    available = set(discord_timeframes_available())
-    missing = [tf for tf in cleaned if tf not in available]
-    if missing:
-        raise ValueError(
-            f"Discord webhook not configured for timeframe(s): {', '.join(missing)}"
-        )
-    return cleaned
 
 
 def _clean_patterns(pats) -> list[str]:
@@ -334,6 +327,29 @@ def signal_key(
     pattern_id: str,
 ) -> str:
     return f"{list_id}|{symbol}|{timeframe}|{bar_ts}|{pattern_id}"
+
+
+def legacy_signal_key(
+    symbol: str,
+    timeframe: str,
+    bar_ts: str,
+    pattern_id: str,
+) -> str:
+    """Pre–multi-watchlist dedupe key (no list_id prefix)."""
+    return f"{symbol}|{timeframe}|{bar_ts}|{pattern_id}"
+
+
+def signal_already_sent(
+    sent: set[str],
+    list_id: str,
+    symbol: str,
+    timeframe: str,
+    bar_ts: str,
+    pattern_id: str,
+) -> bool:
+    if signal_key(list_id, symbol, timeframe, bar_ts, pattern_id) in sent:
+        return True
+    return legacy_signal_key(symbol, timeframe, bar_ts, pattern_id) in sent
 
 
 def read_signals(limit: int = 50) -> list[dict]:

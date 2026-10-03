@@ -20,6 +20,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { saveSignalsConfig } from "@/hooks/use-signals";
 import { cn } from "@/lib/utils";
 import {
+  DISCORD_TIMEFRAMES,
   TIMEFRAMES,
   type SignalPattern,
   type SignalsConfig,
@@ -65,11 +66,7 @@ export function WatchlistFormCard({
       name,
       symbols: ["SPY"],
       telegram_timeframes: ["1d"],
-      discord_timeframes: discordAvailable.includes("1d")
-        ? ["1d"]
-        : discordAvailable.length
-          ? [discordAvailable[0]]
-          : [],
+      discord_timeframes: discordAvailable.includes("1d") ? ["1d"] : [],
       patterns: patterns.map((p) => p.id),
     };
     setLists((prev) => [...prev, created]);
@@ -86,7 +83,6 @@ export function WatchlistFormCard({
 
   const onSave = async () => {
     const names = new Set<string>();
-    const allowedDc = new Set(discordAvailable);
     for (const list of lists) {
       const key = list.name.trim().toLocaleLowerCase();
       if (!list.name.trim()) {
@@ -98,13 +94,6 @@ export function WatchlistFormCard({
         return;
       }
       names.add(key);
-      const badDc = list.discord_timeframes.filter((tf) => !allowedDc.has(tf));
-      if (badDc.length) {
-        toast.error(
-          `'${list.name}': Discord webhook missing for ${badDc.join(", ")} — set .env or unselect`,
-        );
-        return;
-      }
       if (!list.symbols.length || !list.telegram_timeframes.length || !list.patterns.length) {
         toast.error(`'${list.name}' needs symbols, Telegram timeframes, and patterns`);
         return;
@@ -228,25 +217,43 @@ export function WatchlistFormCard({
 
               <Field>
                 <FieldLabel>Discord timeframes</FieldLabel>
-                {discordAvailable.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    No Discord webhooks in <code className="font-mono">.env</code> — Telegram-only alerts.
-                  </p>
-                ) : (
-                  <ToggleGroup
-                    multiple
-                    value={selected.discord_timeframes.filter((tf) => discordAvailable.includes(tf))}
-                    onValueChange={(v) =>
-                      patchSelected({ discord_timeframes: [...(v as string[])] })
-                    }
-                  >
-                    {discordAvailable.map((tf) => (
-                      <ToggleGroupItem key={`dc-${tf}`} value={tf}>
-                        {tf}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                )}
+                {(() => {
+                  const dcOptions = DISCORD_TIMEFRAMES.filter(
+                    (tf) =>
+                      discordAvailable.includes(tf) || selected.discord_timeframes.includes(tf),
+                  );
+                  if (dcOptions.length === 0) {
+                    return (
+                      <p className="text-xs text-muted-foreground">
+                        No Discord webhooks in <code className="font-mono">.env</code> — Telegram-only
+                        alerts.
+                      </p>
+                    );
+                  }
+                  return (
+                    <ToggleGroup
+                      multiple
+                      value={selected.discord_timeframes}
+                      onValueChange={(v) =>
+                        patchSelected({ discord_timeframes: [...(v as string[])] })
+                      }
+                    >
+                      {dcOptions.map((tf) => {
+                        const configured = discordAvailable.includes(tf);
+                        return (
+                          <ToggleGroupItem
+                            key={`dc-${tf}`}
+                            value={tf}
+                            className={cn(!configured && "opacity-70")}
+                          >
+                            {tf}
+                            {!configured ? " (no webhook)" : ""}
+                          </ToggleGroupItem>
+                        );
+                      })}
+                    </ToggleGroup>
+                  );
+                })()}
                 <p className="text-xs text-muted-foreground">
                   1d→day, 1h→hour, 1m/5m/15m/30m→minute, 1w→week webhook
                 </p>

@@ -3,7 +3,7 @@ name: tradebot-editor
 description: TradeBot project editor. Reads HANDSOFF.md, README.md, and RUN.md before changing code; implements features and fixes following stack conventions; updates handoff and user docs whenever behavior, APIs, layout, env vars, or run steps change. Use proactively for any tradebot codebase edits in this repo.
 ---
 
-You are the dedicated editor for the **TradeBot** repository (`d:\Tp\tradebot`): a Python Flask API + Next.js dashboard for paper trading, backtests, and candlestick signal alerts.
+You are the dedicated editor for the **TradeBot** repository (repo root): a Python Flask API + Next.js dashboard for paper trading, backtests, and candlestick signal alerts.
 
 ## Before you change anything
 

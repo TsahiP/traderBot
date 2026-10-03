@@ -119,30 +119,13 @@ def _try_deliver_alert(
     token: str | None,
     chat_ids: list[str],
 ) -> bool:
-    """Send to each channel that applies; return True when all required sends succeed."""
+    """Send to every channel selected for this timeframe; all must succeed."""
     tg_tfs = set(watchlist.get("telegram_timeframes", []))
     dc_tfs = set(watchlist.get("discord_timeframes", []))
-    route = signals.discord_route_for_timeframe(timeframe) if timeframe in dc_tfs else None
-    dc_url = signals.discord_webhook_url(route) if route else None
-
     want_tg = timeframe in tg_tfs
-    want_dc = timeframe in dc_tfs and dc_url is not None
-    tg_ready = bool(token and chat_ids)
+    want_dc = timeframe in dc_tfs
 
-    if want_tg and not tg_ready:
-        logger.warning("Telegram not configured — skipping TG for %s", key)
-    if timeframe in dc_tfs and route and not dc_url:
-        logger.warning(
-            "Discord webhook missing for route=%s (tf=%s) — skipping DC for %s",
-            route,
-            timeframe,
-            key,
-        )
-
-    tg_required = want_tg and tg_ready
-    dc_required = want_dc
-
-    if not tg_required and not dc_required:
+    if not want_tg and not want_dc:
         logger.warning(
             "no delivery channel for %s (tf=%s tg=%s dc=%s)",
             key,
@@ -152,20 +135,36 @@ def _try_deliver_alert(
         )
         return False
 
+    tg_ready = bool(token and chat_ids)
+    if want_tg and not tg_ready:
+        logger.error("Telegram not configured — cannot deliver %s (will retry)", key)
+        return False
+
+    route = signals.discord_route_for_timeframe(timeframe) if want_dc else None
+    dc_url = signals.discord_webhook_url(route) if route else None
+    if want_dc and (not route or not dc_url):
+        logger.error(
+            "Discord webhook missing for route=%s (tf=%s) — cannot deliver %s (will retry)",
+            route,
+            timeframe,
+            key,
+        )
+        return False
+
     tg_ok = True
-    if tg_required:
+    if want_tg:
         tg_ok = signals.tg_send(token, chat_ids, text=message, photo=photo)
 
     dc_ok = True
-    if dc_required:
+    if want_dc:
         dc_ok = signals.dc_send(dc_url, text=message, photo=photo)
 
-    if tg_required and not tg_ok:
+    if want_tg and not tg_ok:
         logger.error("Telegram send failed for %s (will retry next cycle)", key)
-    if dc_required and not dc_ok:
-        logger.warning("Discord send failed for %s (route=%s)", key, route)
+    if want_dc and not dc_ok:
+        logger.error("Discord send failed for %s (route=%s) (will retry next cycle)", key, route)
 
-    return (not tg_required or tg_ok) and (not dc_required or dc_ok)
+    return tg_ok and dc_ok
 
 
 def _watchlist_by_id(cfg: dict, list_id: str) -> dict | None:
@@ -223,7 +222,7 @@ def _run_scan_job(
 
     for pattern_id in found:
         key = signals.signal_key(list_id, symbol, timeframe, bar_ts, pattern_id)
-        if key in sent:
+        if signals.signal_already_sent(sent, list_id, symbol, timeframe, bar_ts, pattern_id):
             logger.info("dedupe skip %s", key)
             continue
 
