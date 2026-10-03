@@ -87,14 +87,14 @@ tradebot/
 ├── signalbot.py       # signal bot loop: poll yfinance per config, detect patterns, alert Telegram (text + chart PNG)
 ├── candle_patterns.py # 6 strong Japanese-candlestick detectors + PATTERNS registry {id: label/direction/bars}
 ├── signals.py         # shared state for the Signals feature: config load/save/validate, signal log + dedupe keys, heartbeat, Telegram + Discord webhook send (text/photo)
-├── chart_image.py     # render_candles() — dark-theme matplotlib PNG of recent bars with the alert bar highlighted
+├── chart_image.py     # render_candles() — dark-theme PNG: candles + alert bar highlight + long/short entry/stop/target overlay
 ├── dashboard.py       # Flask API (see §7 for endpoints)
 ├── start-web.ps1      # launches API + frontend + browser
 ├── requirements.txt
 ├── README.md          # user-facing setup
 ├── output/            # trades.csv, equity_curve.csv, data_<SYMBOL>.csv, live_trades.csv, signal_config.json, signal_log.json, signal_heartbeat.json
 ├── logs/bot.log       # livebot rotating log (1 MB × 3)
-├── logs/signalbot.log # signal bot: one line per cycle + every SIGNAL sent
+├── logs/signalbot.log # signal bot: wake/idle per cycle, per-scan lines, SIGNAL + dedupe/delivery
 └── web/               # Next.js app
     ├── next.config.ts # API proxy rewrites
     └── src/
@@ -136,7 +136,7 @@ tradebot/
 | `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{lists: [{id, name, symbols, telegram_timeframes[], discord_timeframes[], patterns}]}` — per-channel timeframe sets; legacy `timeframes` on a list (or flat file) applies to both channels on load; `discord_timeframes` may include `1w` (weekly bars, yfinance `1wk`; legacy `w` coerces to `1w`) and only TFs with a configured `DISCORD_WEBHOOK_*` env URL; Telegram timeframes do not include `1w`; each list is its own watchlist with its own scan schedule; legacy `poll_minutes` / `discord_route` on disk are stripped on save |
 | `output/signal_log.json` | `signalbot.py` | every sent alert incl. dedupe key (`list_id\|SYMBOL\|tf\|bar_ts\|pattern`) — retried until required channel sends succeed; capped at 1000 entries |
 | `output/signal_heartbeat.json` | `signalbot.py` | `{ts}` of the last scheduler wake — `/api/signals/status` treats the bot as running when age &lt; `SIGNAL_HEARTBEAT_STALE_SECONDS` (120 s) |
-| `logs/signalbot.log` | `signalbot.py` | scheduler wake lines + every SIGNAL sent |
+| `logs/signalbot.log` | `signalbot.py` | wake/idle, scan result per job, SIGNAL, dedupe/delivery warnings |
 
 Note: the equity CSV has **tz-aware timestamps** (`-05:00`); `dashboard.py`
 parses them with `pd.to_datetime(..., utc=True).tz_convert(None)` — keep that
@@ -281,7 +281,7 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   (in-progress bar dropped), detects patterns, computes entry/stop/target (R:R
   1:2), sends Telegram for TFs in `telegram_timeframes` and Discord for TFs in
   `discord_timeframes` using automatic route mapping (`1d`→day webhook, etc.) —
-  text + matplotlib PNG (`chart_image.py`). Dedupe key
+  text + matplotlib PNG (`chart_image.py`, includes R:R overlay). Dedupe key
   `list_id|SYMBOL|tf|bar_ts|pattern` is logged after all **required** channel
   sends succeed.
 - **Crypto symbols:** on save/load, `BTC` and `ETH` normalize to yfinance spot
