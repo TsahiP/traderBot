@@ -12,10 +12,11 @@ from engine import compute_metrics, run_backtest
 
 
 def download_data() -> pd.DataFrame:
-    import yfinance as yf
+    import market_data
 
-    df = yf.Ticker(config.SYMBOL).history(
-        start=config.BACKTEST_START, auto_adjust=True, actions=False
+    df = market_data.fetch_history(
+        config.SYMBOL,
+        {"start": config.BACKTEST_START, "auto_adjust": True, "actions": False},
     )
     if df.empty:
         sys.exit("No data downloaded - check your internet connection.")

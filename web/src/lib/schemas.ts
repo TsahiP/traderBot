@@ -33,6 +33,19 @@ export const LiveSnapshot = z.object({
 });
 export type LiveSnapshot = z.infer<typeof LiveSnapshot>;
 
+export const MarketProviderStatus = z.object({
+  connected: z.boolean(),
+  keys_configured: z.boolean().optional(),
+  reason: z.string().nullable().optional(),
+});
+export type MarketProviderStatus = z.infer<typeof MarketProviderStatus>;
+
+export const MarketStatus = z.object({
+  alpaca: MarketProviderStatus,
+  bybit: MarketProviderStatus,
+});
+export type MarketStatus = z.infer<typeof MarketStatus>;
+
 export const Stats = z.object({
   realized: z.object({
     trades: z.number(),

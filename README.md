@@ -29,6 +29,12 @@ live paper bot, so what you backtest is what you trade.
    The bot always talks to the **paper** account - it can never trade real
    money.
 
+3. **Optional Bybit keys (crypto data):**
+   - Lab backtests and signal alerts use **Bybit spot** for tickers ending in
+     `-USD` (e.g. `BTC-USD`). Public kline endpoints work without keys; add
+     `BYBIT_API_KEY` and `BYBIT_SECRET_KEY` to `.env` if you want the dashboard
+     to show them as configured (`GET /api/market/status`).
+
 ## 1. Backtest first (no keys needed)
 
 ```powershell
@@ -79,8 +85,9 @@ truth. Two tabs:
 - **Dashboard** — sticky ticker tape (last close, SMAs, live signal), stat
   cards (account equity, position, realized P&L, win rate), equity curve
   chart, and the trade ledger. Auto-refreshes every 30s.
-- **Backtest lab** — run a backtest on **any ticker** (default SPY) with any
-  SMA pair, quantity and capital. Renders candlesticks with SMA overlays,
+- **Backtest lab** — run a backtest on **any ticker** (default SPY; use
+  `BTC-USD` / `ETH-USD` for crypto via Bybit) with any SMA pair, quantity and
+  capital. Renders candlesticks with SMA overlays,
   ▲ buy / ▼ sell markers where the logic fires, volume bars, metrics and the
   full trade list. Inputs are validated with zod; API responses are schema
   checked on every fetch.

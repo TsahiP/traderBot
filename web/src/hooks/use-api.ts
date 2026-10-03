@@ -6,6 +6,7 @@ import { apiFetcher } from "@/lib/api";
 import {
   EquityResponse,
   LiveSnapshot,
+  MarketStatus,
   Stats,
   StrategiesResponse,
   TradesResponse,
@@ -16,6 +17,14 @@ const REFRESH = 30_000;
 export function useLive() {
   return useSWR<LiveSnapshot>("/api/live", (url: string) =>
     apiFetcher(url, LiveSnapshot),
+  );
+}
+
+export function useMarketStatus() {
+  return useSWR<MarketStatus>(
+    "/api/market/status",
+    (url: string) => apiFetcher(url, MarketStatus),
+    { refreshInterval: REFRESH },
   );
 }
 

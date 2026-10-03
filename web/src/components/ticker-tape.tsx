@@ -11,6 +11,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "@/lib/format";
+import { useMarketStatus } from "@/hooks/use-api";
 import type { LiveSnapshot } from "@/lib/schemas";
 
 function SignalBadge({ signal }: { signal: number | undefined }) {
@@ -63,7 +64,33 @@ function TapeItem({
   );
 }
 
+function ProviderDot({
+  label,
+  connected,
+  detail,
+}: {
+  label: string;
+  connected: boolean;
+  detail?: string | null;
+}) {
+  return (
+    <span
+      className="flex items-center gap-1 whitespace-nowrap text-[10px] uppercase tracking-wider text-muted-foreground"
+      title={detail ?? undefined}
+    >
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          connected ? "bg-up" : "bg-muted-foreground/40",
+        )}
+      />
+      {label}
+    </span>
+  );
+}
+
 export function TickerTape({ live }: { live: LiveSnapshot | undefined }) {
+  const { data: market } = useMarketStatus();
   const [flash, setFlash] = useState<"up" | "down" | null>(null);
   const prevClose = useRef<number | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,14 +156,32 @@ export function TickerTape({ live }: { live: LiveSnapshot | undefined }) {
 
         <SignalBadge signal={live?.signal} />
 
-        <div className="ml-auto hidden text-xs text-muted-foreground sm:block">
-          {live?.fallback
-            ? "backtest data (no .env keys)"
-            : live?.connected
-              ? marketOpen
-                ? "market open"
-                : "market closed"
-              : live?.reason ?? "connecting…"}
+        <div className="ml-auto flex flex-wrap items-center gap-3">
+          <div className="hidden items-center gap-2 sm:flex">
+            <ProviderDot
+              label="alpaca"
+              connected={Boolean(market?.alpaca.connected)}
+              detail={market?.alpaca.reason}
+            />
+            <ProviderDot
+              label="bybit"
+              connected={Boolean(market?.bybit.connected)}
+              detail={
+                market?.bybit.connected
+                  ? "crypto · -USD tickers"
+                  : market?.bybit.reason
+              }
+            />
+          </div>
+          <span className="hidden text-xs text-muted-foreground md:inline">
+            {live?.fallback
+              ? "backtest data (no .env keys)"
+              : live?.connected
+                ? marketOpen
+                  ? "market open"
+                  : "market closed"
+                : live?.reason ?? "connecting…"}
+          </span>
         </div>
       </div>
     </header>

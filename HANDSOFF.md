@@ -14,8 +14,8 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
 | Backend API | Python 3.12 · Flask | `dashboard.py`, port `8000`, API-only |
 | Strategy/engine | pandas | `strategies.py` (registry) + `engine.py` — single source of truth |
 | Live trading | alpaca-py (paper) | `livebot.py` |
-| Signal alerts | yfinance polling + matplotlib | `signalbot.py` — candlestick patterns → Telegram text + chart image |
-| Historical data | yfinance | backtests, on-demand downloads |
+| Signal alerts | market data + matplotlib | `signalbot.py` — candlestick patterns → Telegram text + chart image |
+| Historical data | yfinance + Bybit spot | `market_data.py` routes `-USD` crypto to Bybit; equities stay on yfinance |
 | Local LLM advisor | LM Studio (OpenAI-compatible) | `/api/analyze` re-runs a backtest and has the local model critique it |
 | Frontend | Next.js 16 (App Router) · TypeScript · Tailwind v4 | `web/`, port `3000` |
 | UI kit | shadcn/ui (nova preset, Base UI) | components in `web/src/components/ui/` |
@@ -39,14 +39,15 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
                   │  └────────────────┘  │
                   └──────┬───────┬───────┘
                          │       │
-              livebot.py │       │ yfinance (on-demand)
-              (Alpaca     │       │  daily: BACKTEST_START→now
-               paper)     │       │  intraday: period-capped (7d/60d/730d)
+              livebot.py │       │ market_data (on-demand)
+              (Alpaca     │       │  equities: yfinance
+               paper)     │       │  *-USD crypto: Bybit spot klines
+                          │       │  intraday windows still capped for yfinance
                           │       ▼
                           ▼    output/data_*.csv (CLI only)
                    output/live_trades.csv
 
- signalbot.py ── yfinance poll (per cycle, config re-read each time)
+ signalbot.py ── market_data poll (per cycle, config re-read each time)
    candle_patterns.detect_all() on last closed bar → Telegram text + PNG chart
    state: output/signal_config.json · signal_log.json (dedupe) · signal_heartbeat.json
  ```
@@ -70,12 +71,18 @@ npm run dev                # UI  :3000  (or npm run build && npm start)
 ```
 
 Optional envs: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` (paper keys, in `.env` —
-gitignored). Without them the dashboard still works on backtest data.
+gitignored). `BYBIT_API_KEY` / `BYBIT_SECRET_KEY` are optional for public spot
+klines; `/api/market/status` reports whether they are set. Without Alpaca keys
+the dashboard still works on backtest data.
 
 ## 4. Project layout
 
 ```
 tradebot/
+├── market_symbols.py  # is_crypto_symbol (-USD), to_bybit_spot_symbol (BASE-USD → BASEUSDT)
+├── market_data.py     # fetch_history / fetch_recent_bars — routes crypto → Bybit
+├── bybit_client.py    # Bybit v5 public klines + bybit_health()
+├── alpaca_client.py   # alpaca_health() for /api/market/status
 ├── config.py          # all knobs: SYMBOL, SMA_FAST/SLOW, QUANTITY, CAPITAL, POLL_INTERVAL_MIN
 ├── strategy.py        # SMA signals: compute_signals(df, fast, slow) -> signal col; latest_signal()
 ├── strategies.py      # STRATEGIES registry: sma_crossover, vwap_reversion, opening_range_breakout, rsi_mean_reversion
@@ -144,6 +151,7 @@ if you regenerate the file differently.
 
 | Endpoint | Params | Returns |
 |---|---|---|
+| `GET /api/market/status` | — | `{alpaca: {connected, keys_configured, reason?}, bybit: {connected, keys_configured, reason?}}` — provider reachability for the ticker tape |
 | `GET /api/live` | — | `{connected, market_open, symbol, close, sma_fast, sma_slow, signal, account?, position?}` — falls back to last backtest bar when keys missing |
 | `GET /api/stats` | — | `{realized: {trades, total_pnl, wins, win_rate?}, backtest: {...metrics}\|null}` |
 | `GET /api/trades` | — | `{trades: [{entry_date, entry_price, exit_date, exit_price, qty, pnl, source: "live"\|"backtest"}]}` newest first |
@@ -211,8 +219,14 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   retry; don't open CSVs in Excel while backtesting.
 - Paper orders assume instant fills; `livebot.py` reads `filled_avg_price`
   from the order with a last-close fallback.
-- Ticker symbols are user input to yfinance — a typo yields a clean 404,
-  not a crash.
+- Ticker symbols are user input — a typo yields a clean 404, not a crash.
+- **Crypto routing:** symbols ending in `-USD` (e.g. `BTC-USD`, including
+  `BTC`/`ETH` aliases in signal watchlists) use **Bybit spot** (`BASEUSDT`).
+  Public klines do not require API keys; long daily history is paginated (1000
+  bars per request). Crypto trades 24/7 — session/EOD rules still use NY time
+  in the engine when `flat_eod` applies.
+- Equities (`SPY`, `AAPL`, …) still use **yfinance** for Lab backtests and
+  signal scans.
 - `.env` holds **paper** keys only. Never add live keys; the code hardcodes
   `paper=True`.
 
@@ -272,12 +286,15 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   ≤ half-body doji-ish middle candle whose center is past the first bar's
   midpoint and a third bar closing beyond it). Unit-tested on synthetic OHLCV:
   12 positive/negative cases + multi-pattern detection, all passing.
-- **Alert flow:** `signalbot.py` polls yfinance per config (in-progress bar
-  dropped), detects patterns, computes entry = close, stop = extreme of the
+- **Alert flow:** `signalbot.py` polls `market_data.fetch_recent_bars` per config
+  (`-USD` → Bybit; equities → yfinance; in-progress bar dropped), detects
+  patterns, computes entry = close, stop = extreme of the
   whole pattern window, target = 2× risk (R:R 1:2), then sends Telegram text +
   a matplotlib PNG (`chart_image.py`, last ~30 bars, alert bar highlighted).
   Dedupe key `SYMBOL|tf|bar_ts|pattern` is logged only after a successful send,
   so a failed Telegram call retries next cycle.
+- **Crypto symbols:** `BTC` / `ETH` normalize to `BTC-USD` / `ETH-USD` on save;
+  OHLCV for `-USD` tickers comes from Bybit spot (`BASEUSDT`).
 - **Verified end-to-end:** all five `/api/signals/*` endpoints (incl. 400 on bad
   timeframe), test message delivered to Telegram, and one real alert — TSLA 15m
   bearish engulfing on the last closed bar — sent with chart image and shown in

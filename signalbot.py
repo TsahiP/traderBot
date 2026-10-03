@@ -8,7 +8,7 @@ made in the Signals tab of the web UI apply without a restart.
 import logging
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from zoneinfo import ZoneInfo
 
@@ -16,6 +16,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 import config
+import market_data
 import signals
 from candle_patterns import PATTERNS, detect_all
 from chart_image import render_candles
@@ -31,40 +32,9 @@ _handler = RotatingFileHandler(
 _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logger.addHandler(_handler)
 
-# How much history to pull per cycle: enough for 3-bar patterns + a 30-bar chart.
-TF_PERIOD = {"1m": "5d", "5m": "15d", "15m": "30d", "30m": "60d", "1h": "90d", "1d": "180d"}
-_TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
-
-
 def fetch_bars(symbol: str, timeframe: str) -> pd.DataFrame:
     """Recent OHLCV bars with the in-progress bar dropped."""
-    logger.info("hello-> %s", symbol)
-    import yfinance as yf
-
-    last_df = pd.DataFrame()
-    for _ in range(3):
-        df = yf.Ticker(symbol).history(period=TF_PERIOD[timeframe], interval=timeframe, auto_adjust=True)
-        last_df = df
-        if not df.empty:
-            break
-        time.sleep(0.8)
-
-    if df.empty:
-        return df
-
-    now = datetime.now(NY)
-    last_ts = df.index[-1].to_pydatetime()
-    if timeframe == "1d":
-        in_progress = last_ts.date() == now.date()
-    else:
-        minutes = _TF_MINUTES[timeframe]
-        bucket_start = (now - timedelta(minutes=now.minute % minutes, seconds=now.second, microseconds=now.microsecond)).replace(microsecond=0)
-        if minutes >= 60:
-            bucket_start = now.replace(minute=0, second=0, microsecond=0)
-        in_progress = last_ts >= bucket_start
-    if in_progress:
-        df = df.iloc[:-1]
-    return df
+    return market_data.fetch_recent_bars(symbol, timeframe)
 
 
 def build_levels(df: pd.DataFrame, pattern_id: str) -> dict:

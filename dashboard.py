@@ -18,8 +18,11 @@ from flask import Flask, jsonify, request
 
 import config
 import engine
+import market_data
 import signals
 import strategies
+from alpaca_client import alpaca_health
+from bybit_client import bybit_health
 from candle_patterns import PATTERNS as SIGNAL_PATTERNS
 from livebot import get_last_completed_bars
 from strategy import compute_signals, latest_signal
@@ -286,6 +289,11 @@ def api_live():
     return jsonify(snap)
 
 
+@app.route("/api/market/status")
+def api_market_status():
+    return jsonify({"alpaca": alpaca_health(), "bybit": bybit_health()})
+
+
 @app.route("/api/strategies")
 def api_strategies():
     return jsonify([
@@ -301,25 +309,6 @@ def api_strategies():
         }
         for sid, spec in strategies.STRATEGIES.items()
     ])
-
-
-def fetch_history(symbol: str, kwargs: dict) -> pd.DataFrame:
-    """Fetch OHLCV history with a short retry.
-
-    Yahoo/yfinance occasionally returns an empty frame on a transient blip
-    (rate limit, cold cookie/crumb). Retry a couple of times before giving up
-    so a valid ticker doesn't surface as a false 404.
-    """
-    import yfinance as yf
-
-    last_df = pd.DataFrame()
-    for _ in range(3):
-        df = yf.Ticker(symbol).history(**kwargs)
-        last_df = df
-        if not df.empty:
-            return df
-        time.sleep(0.8)
-    return last_df
 
 
 def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
@@ -391,12 +380,22 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         if end_d:
             kwargs["end"] = (min(end_d, now.date()) + timedelta(days=1)).isoformat()
 
-    df = fetch_history(symbol, kwargs)
+    df = market_data.fetch_history(symbol, kwargs)
     if df.empty:
-        return None, 404, (
-            f"No data for '{symbol}' - check the ticker symbol and date range "
-            f"(intraday history is limited: 1m~7d, 5m-30m~60d, 1h~730d)"
-        )
+        from market_symbols import is_crypto_symbol, to_bybit_spot_symbol
+
+        if is_crypto_symbol(symbol):
+            try:
+                pair = to_bybit_spot_symbol(symbol)
+            except ValueError:
+                pair = symbol
+            hint = f"no Bybit spot data for {pair}"
+        else:
+            hint = (
+                "check the ticker symbol and date range "
+                "(intraday history is limited: 1m~7d, 5m-30m~60d, 1h~730d)"
+            )
+        return None, 404, f"No data for '{symbol}' - {hint}"
 
     flat_eod = spec["flat_eod"] and timeframe != "1d"
     curve, trades_df = engine.run_backtest(
