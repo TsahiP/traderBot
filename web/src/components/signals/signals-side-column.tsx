@@ -14,18 +14,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  sendDiscordSignalTest,
-  sendSignalTest,
-} from "@/hooks/use-signals";
+import { sendSignalTest } from "@/hooks/use-signals";
 import type {
-  DiscordRoute,
   SignalEntry,
   SignalsConfigResponse,
   SignalsStatus,
 } from "@/lib/schemas";
 
-import { DISCORD_TEST_ROUTES } from "./constants";
+import { DiscordWebhooksCard } from "./discord-webhooks-card";
 import { RecentSignalsTable } from "./recent-signals-table";
 
 export function SignalsSideColumn({
@@ -38,7 +34,6 @@ export function SignalsSideColumn({
   signals: SignalEntry[];
 }) {
   const [testing, setTesting] = useState(false);
-  const [discordTesting, setDiscordTesting] = useState<DiscordRoute | null>(null);
 
   const onTest = async () => {
     setTesting(true);
@@ -49,18 +44,6 @@ export function SignalsSideColumn({
       toast.error(e instanceof Error ? e.message : "Test failed");
     } finally {
       setTesting(false);
-    }
-  };
-
-  const onDiscordTest = async (route: DiscordRoute) => {
-    setDiscordTesting(route);
-    try {
-      await sendDiscordSignalTest(route);
-      toast.success(`Test sent - check Discord (${route})`);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Test failed");
-    } finally {
-      setDiscordTesting(null);
     }
   };
 
@@ -116,51 +99,7 @@ export function SignalsSideColumn({
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Discord webhooks</CardTitle>
-          <CardDescription>
-            Each Discord timeframe in a watchlist uses its matching webhook automatically.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {cfgData?.discord_available_timeframes.length ? (
-            <p className="text-xs text-muted-foreground">
-              Available for signals:{" "}
-              <span className="font-mono">{cfgData.discord_available_timeframes.join(", ")}</span>
-            </p>
-          ) : null}
-          <div className="flex flex-wrap gap-2">
-            {DISCORD_TEST_ROUTES.map(({ route, label }) => {
-              const ok = cfgData?.discord_configured?.[route];
-              return (
-                <Badge key={route} variant={ok ? "secondary" : "destructive"}>
-                  {label} {ok ? "configured" : "missing webhook"}
-                </Badge>
-              );
-            })}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {DISCORD_TEST_ROUTES.map(({ route, label }) => {
-              const configured = cfgData?.discord_configured?.[route];
-              const busy = discordTesting === route;
-              return (
-                <Button
-                  key={route}
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={!configured || busy || discordTesting !== null}
-                  onClick={() => onDiscordTest(route)}
-                >
-                  {busy ? <Spinner data-icon="inline-start" /> : null}
-                  {busy ? "Sending…" : `Test ${label.toLowerCase()}`}
-                </Button>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+      <DiscordWebhooksCard cfgData={cfgData} />
 
       <RecentSignalsTable signals={signals} />
     </div>

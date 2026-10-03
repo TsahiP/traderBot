@@ -7,7 +7,7 @@ made in the Signals tab of the web UI apply without a restart.
 """
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from zoneinfo import ZoneInfo
 
@@ -18,6 +18,8 @@ import config
 import signals
 from candle_patterns import PATTERNS, detect_all
 from chart_image import render_candles
+from market_data import fetch_ohlcv, fetch_ohlcv_period
+from market_symbols import is_bybit_crypto, normalize_symbol
 
 load_dotenv(config.BASE_DIR / ".env")
 
@@ -40,24 +42,28 @@ TF_PERIOD = {
     "1d": "180d",
     "1w": "5y",
 }
-_YF_INTERVAL = {"1w": "1wk"}
 _TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
+_BYBIT_LOOKBACK = {
+    "1m": timedelta(days=5),
+    "5m": timedelta(days=15),
+    "15m": timedelta(days=30),
+    "30m": timedelta(days=60),
+    "1h": timedelta(days=90),
+    "1d": timedelta(days=180),
+    "1w": timedelta(days=365 * 5),
+}
 
 
 def fetch_bars(symbol: str, timeframe: str) -> pd.DataFrame:
     """Recent OHLCV bars with the in-progress bar dropped."""
-    import yfinance as yf
+    symbol = normalize_symbol(symbol)
+    if is_bybit_crypto(symbol):
+        # Bybit drops the unclosed candle by its UTC end time. A second
+        # NY-date check would discard a daily bar that already closed.
+        start = datetime.now(timezone.utc) - _BYBIT_LOOKBACK[timeframe]
+        return fetch_ohlcv(symbol, timeframe, start=start)
 
-    last_df = pd.DataFrame()
-    for _ in range(3):
-        yf_interval = _YF_INTERVAL.get(timeframe, timeframe)
-        df = yf.Ticker(symbol).history(
-            period=TF_PERIOD[timeframe], interval=yf_interval, auto_adjust=True
-        )
-        last_df = df
-        if not df.empty:
-            break
-        time.sleep(0.8)
+    df = fetch_ohlcv_period(symbol, timeframe, TF_PERIOD[timeframe])
 
     if df.empty:
         return df
@@ -118,6 +124,7 @@ def _try_deliver_alert(
     photo: bytes | None,
     token: str | None,
     chat_ids: list[str],
+    symbol: str,
 ) -> bool:
     """Send to every channel selected for this timeframe; all must succeed."""
     tg_tfs = set(watchlist.get("telegram_timeframes", []))
@@ -140,8 +147,19 @@ def _try_deliver_alert(
         logger.error("Telegram not configured — cannot deliver %s (will retry)", key)
         return False
 
-    route = signals.discord_route_for_timeframe(timeframe) if want_dc else None
+    route = (
+        signals.discord_route_for_symbol_timeframe(symbol, timeframe) if want_dc else None
+    )
     dc_url = signals.discord_webhook_url(route) if route else None
+    if want_dc and route and dc_url:
+        wh_id = dc_url.split("/webhooks/", 1)[-1].split("/", 1)[0][:12]
+        logger.info(
+            "Discord route %s %s -> %s (webhook …%s)",
+            normalize_symbol(symbol),
+            timeframe,
+            route,
+            wh_id,
+        )
     if want_dc and (not route or not dc_url):
         logger.error(
             "Discord webhook missing for route=%s (tf=%s) — cannot deliver %s (will retry)",
@@ -241,7 +259,9 @@ def _run_scan_job(
             logger.warning("chart render failed for %s: %s", key, exc)
             photo = None
 
-        if not _try_deliver_alert(watchlist, timeframe, key, message, photo, token, chat_ids):
+        if not _try_deliver_alert(
+            watchlist, timeframe, key, message, photo, token, chat_ids, symbol
+        ):
             logger.warning("delivery failed or blocked for %s — will retry next cycle", key)
             continue
 
@@ -272,6 +292,7 @@ def main() -> None:
     while True:
         wake_start = time.time()
         cfg = signals.load_config()
+        signals.reload_discord_webhooks_cache()
         signals.write_heartbeat()
         token, _ = signals.telegram_credentials()
         chat_ids = signals.telegram_chat_ids()

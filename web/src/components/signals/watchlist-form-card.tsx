@@ -255,7 +255,8 @@ export function WatchlistFormCard({
                   );
                 })()}
                 <p className="text-xs text-muted-foreground">
-                  1d→day, 1h→hour, 1m/5m/15m/30m→minute, 1w→week webhook
+                  Discord uses one webhook per timeframe; stocks vs crypto (-USD) pick the channel
+                  automatically.
                 </p>
               </Field>
 

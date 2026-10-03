@@ -6,7 +6,6 @@ The Next.js frontend (web/) proxies /api/* to this server (port 8000).
 """
 import json
 import os
-import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -17,11 +16,15 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
 import config
+import discord_sync
 import engine
 import signals
 import strategies
+from bybit_client import BybitError
 from candle_patterns import PATTERNS as SIGNAL_PATTERNS
 from livebot import get_last_completed_bars
+from market_data import fetch_ohlcv, fetch_yfinance_history
+from market_symbols import is_bybit_crypto, is_valid_symbol, normalize_symbol
 from strategy import compute_signals, latest_signal
 
 load_dotenv(config.BASE_DIR / ".env")
@@ -304,22 +307,22 @@ def api_strategies():
 
 
 def fetch_history(symbol: str, kwargs: dict) -> pd.DataFrame:
-    """Fetch OHLCV history with a short retry.
+    """Fetch OHLCV history with a short retry on the stock (yfinance) path.
 
-    Yahoo/yfinance occasionally returns an empty frame on a transient blip
-    (rate limit, cold cookie/crumb). Retry a couple of times before giving up
-    so a valid ticker doesn't surface as a false 404.
+    Tickers ending in `-USD` go to Bybit spot. Yahoo/yfinance occasionally
+    returns an empty frame on a transient blip (rate limit, cold cookie/crumb).
+    Retry a couple of times before giving up so a valid stock ticker doesn't
+    surface as a false 404.
     """
-    import yfinance as yf
-
-    last_df = pd.DataFrame()
-    for _ in range(3):
-        df = yf.Ticker(symbol).history(**kwargs)
-        last_df = df
-        if not df.empty:
-            return df
-        time.sleep(0.8)
-    return last_df
+    symbol = normalize_symbol(symbol)
+    if is_bybit_crypto(symbol):
+        return fetch_ohlcv(
+            symbol,
+            timeframe=kwargs.get("interval") or "1d",
+            start=kwargs.get("start"),
+            end=kwargs.get("end"),
+        )
+    return fetch_yfinance_history(symbol, **kwargs)
 
 
 def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
@@ -328,7 +331,7 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
     Returns (payload, status, error). payload is None when error is set.
     """
     try:
-        symbol = (raw.get("symbol") or config.SYMBOL).strip().upper()
+        symbol = normalize_symbol(raw.get("symbol") or config.SYMBOL)
         strategy_id = (raw.get("strategy") or "sma_crossover").strip()
         timeframe = (raw.get("timeframe") or "1d").strip()
         qty = int(raw.get("qty") or config.QUANTITY)
@@ -342,7 +345,7 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
     except ValueError:
         return None, 400, "Invalid parameter values"
 
-    if not symbol or len(symbol) > 12 or not symbol.replace(".", "").isalnum():
+    if not is_valid_symbol(symbol):
         return None, 400, "Invalid symbol - use e.g. SPY, AAPL, BTC-USD"
     if strategy_id not in strategies.STRATEGIES:
         return None, 400, f"Unknown strategy '{strategy_id}'"
@@ -391,7 +394,10 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         if end_d:
             kwargs["end"] = (min(end_d, now.date()) + timedelta(days=1)).isoformat()
 
-    df = fetch_history(symbol, kwargs)
+    try:
+        df = fetch_history(symbol, kwargs)
+    except BybitError as exc:
+        return None, 400, str(exc)
     if df.empty:
         return None, 404, (
             f"No data for '{symbol}' - check the ticker symbol and date range "
@@ -679,16 +685,69 @@ def api_signals_test():
 def api_signals_discord_test():
     body = request.get_json(silent=True) or {}
     route = str(body.get("route", "")).strip().lower()
-    if route not in signals.DISCORD_ROUTES:
-        routes = ", ".join(signals.DISCORD_ROUTES)
-        return jsonify({"error": f"route must be one of: {routes}"}), 400
-    url = signals.discord_webhook_url(route)
+    canon = signals.normalize_discord_route(route)
+    if not canon:
+        routes = ", ".join(signals.DISCORD_CANONICAL_ROUTES)
+        legacy = ", ".join(sorted(signals.DISCORD_ROUTE_ALIASES))
+        return jsonify({
+            "error": f"route must be a canonical route ({routes}) or alias ({legacy})",
+        }), 400
+    url = signals.discord_webhook_url(canon)
     if not url:
-        return jsonify({"error": f"{signals.DISCORD_ROUTE_ENV[route]} missing in .env"}), 400
-    ok = signals.dc_send(url, text=f"tradebot signal test - Discord {route} is wired up")
+        env_keys = signals.DISCORD_ROUTE_ENV_FALLBACKS.get(canon, ())
+        hint = env_keys[0] if env_keys else canon
+        return jsonify({
+            "error": (
+                f"{hint} missing in .env and no synced webhook for {canon} "
+                "(set env or run Sync from Discord)"
+            ),
+        }), 400
+    ok = signals.dc_send(url, text=f"tradebot signal test - Discord {canon} is wired up")
     if not ok:
         return jsonify({"error": "Discord rejected the message - check webhook URL and network"}), 502
     return jsonify({"ok": True})
+
+
+@app.route("/api/signals/discord-sync", methods=["GET"])
+def api_signals_discord_sync_status():
+    snap = discord_sync.read_sync_snapshot()
+    if not snap:
+        return jsonify({"synced_at": None, "routes": {}, "unmatched_channels": [], "conflicts": []})
+    return jsonify({
+        "synced_at": snap.get("synced_at"),
+        "routes": {
+            route: {
+                "channel_name": meta.get("channel_name"),
+                "channel_id": meta.get("channel_id"),
+            }
+            for route, meta in (snap.get("routes") or {}).items()
+            if isinstance(meta, dict)
+        },
+        "unmatched_channels": snap.get("unmatched_channels") or [],
+        "conflicts": snap.get("conflicts") or [],
+        "skipped_no_webhook": snap.get("skipped_no_webhook") or [],
+    })
+
+
+@app.route("/api/signals/discord-sync", methods=["POST"])
+def api_signals_discord_sync_run():
+    body, err = _json_object_body()
+    if err:
+        return err
+    create = bool(body.get("create_webhooks", False))
+    try:
+        result = discord_sync.sync_discord_webhooks(create_missing_webhooks=create)
+    except discord_sync.DiscordSyncError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Discord sync failed: {exc}"}), 502
+    return jsonify({
+        "synced_at": result.get("synced_at"),
+        "routes": list((result.get("routes") or {}).keys()),
+        "unmatched_channels": result.get("unmatched_channels") or [],
+        "conflicts": result.get("conflicts") or [],
+        "skipped_no_webhook": result.get("skipped_no_webhook") or [],
+    })
 
 
 if __name__ == "__main__":

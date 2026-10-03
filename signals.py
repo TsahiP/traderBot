@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 
 import config
 from candle_patterns import PATTERNS
+from market_data import ohlcv_source
+from market_symbols import normalize_symbol
 
 VALID_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "1d"]
 VALID_DISCORD_TIMEFRAMES = [*VALID_TIMEFRAMES, "1w"]
@@ -23,28 +25,125 @@ def _coerce_discord_timeframe_list(tfs) -> list:
         return tfs
     return ["1w" if tf == "w" else tf for tf in tfs]
 _SYMBOL_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
-# yfinance: bare BTC/ETH are Grayscale ETFs, not spot crypto.
-_YFINANCE_SYMBOL_ALIASES = {"BTC": "BTC-USD", "ETH": "ETH-USD"}
 _ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 
-DiscordRoute = Literal["day", "hour", "minute", "week"]
-DISCORD_ROUTES: tuple[DiscordRoute, ...] = ("day", "hour", "minute", "week")
-DISCORD_ROUTE_ENV: dict[DiscordRoute, str] = {
+TIMEFRAME_ROUTE_SUFFIX: dict[str, str] = {
+    "1m": "1m",
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h": "1h",
+    "1d": "1d",
+    "1w": "1w",
+}
+_STOCK_TF_SUFFIXES = ("1m", "5m", "15m", "30m", "1h", "1d", "1w")
+_STOCK_DISCORD_ROUTES = tuple(f"stock_{s}" for s in _STOCK_TF_SUFFIXES)
+_CRYPTO_DISCORD_ROUTES = tuple(f"crypto_{s}" for s in _STOCK_TF_SUFFIXES)
+_NEWS_DISCORD_ROUTES = ("stock_news", "crypto_news")
+DISCORD_CANONICAL_ROUTES: tuple[str, ...] = (
+    *_STOCK_DISCORD_ROUTES,
+    *_CRYPTO_DISCORD_ROUTES,
+    *_NEWS_DISCORD_ROUTES,
+)
+DISCORD_ROUTES = DISCORD_CANONICAL_ROUTES
+
+DiscordRoute = Literal[
+    "stock_1m",
+    "stock_5m",
+    "stock_15m",
+    "stock_30m",
+    "stock_1h",
+    "stock_1d",
+    "stock_1w",
+    "crypto_1m",
+    "crypto_5m",
+    "crypto_15m",
+    "crypto_30m",
+    "crypto_1h",
+    "crypto_1d",
+    "crypto_1w",
+    "stock_news",
+    "crypto_news",
+]
+
+DISCORD_ROUTE_ENV_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "stock_1m": ("DISCORD_WEBHOOK_STOCK_1M", "DISCORD_WEBHOOK_MINUTE_TRADE"),
+    "stock_5m": (
+        "DISCORD_WEBHOOK_STOCK_5M",
+        "DISCORD_WEBHOOK_STOCK_1M",
+        "DISCORD_WEBHOOK_MINUTE_TRADE",
+    ),
+    "stock_15m": (
+        "DISCORD_WEBHOOK_STOCK_15M",
+        "DISCORD_WEBHOOK_STOCK_1M",
+        "DISCORD_WEBHOOK_MINUTE_TRADE",
+    ),
+    "stock_30m": (
+        "DISCORD_WEBHOOK_STOCK_30M",
+        "DISCORD_WEBHOOK_STOCK_1M",
+        "DISCORD_WEBHOOK_MINUTE_TRADE",
+    ),
+    "stock_1h": (
+        "DISCORD_WEBHOOK_STOCK_1H",
+        "DISCORD_WEBHOOK_STOCK_HOUR",
+        "DISCORD_WEBHOOK_HOUR_TRADE",
+    ),
+    "stock_1d": (
+        "DISCORD_WEBHOOK_STOCK_1D",
+        "DISCORD_WEBHOOK_STOCK_DAY",
+        "DISCORD_WEBHOOK_DAY_TRADE",
+    ),
+    "stock_1w": (
+        "DISCORD_WEBHOOK_STOCK_1W",
+        "DISCORD_WEBHOOK_STOCK_WEEK",
+        "DISCORD_WEBHOOK_WEEK_TRADE",
+    ),
+    "crypto_1m": ("DISCORD_WEBHOOK_CRYPTO_1M", "DISCORD_WEBHOOK_CRYPTO_MINUTE"),
+    "crypto_5m": (
+        "DISCORD_WEBHOOK_CRYPTO_5M",
+        "DISCORD_WEBHOOK_CRYPTO_1M",
+        "DISCORD_WEBHOOK_CRYPTO_MINUTE",
+    ),
+    "crypto_15m": (
+        "DISCORD_WEBHOOK_CRYPTO_15M",
+        "DISCORD_WEBHOOK_CRYPTO_1M",
+        "DISCORD_WEBHOOK_CRYPTO_MINUTE",
+    ),
+    "crypto_30m": (
+        "DISCORD_WEBHOOK_CRYPTO_30M",
+        "DISCORD_WEBHOOK_CRYPTO_1M",
+        "DISCORD_WEBHOOK_CRYPTO_MINUTE",
+    ),
+    "crypto_1h": ("DISCORD_WEBHOOK_CRYPTO_1H", "DISCORD_WEBHOOK_CRYPTO_HOUR"),
+    "crypto_1d": ("DISCORD_WEBHOOK_CRYPTO_1D", "DISCORD_WEBHOOK_CRYPTO_DAY"),
+    "crypto_1w": ("DISCORD_WEBHOOK_CRYPTO_1W", "DISCORD_WEBHOOK_CRYPTO_WEEK"),
+    "stock_news": ("DISCORD_WEBHOOK_STOCK_NEWS",),
+    "crypto_news": ("DISCORD_WEBHOOK_CRYPTO_NEWS",),
+}
+
+DISCORD_ROUTE_ALIASES: dict[str, str] = {
+    "day": "stock_1d",
+    "hour": "stock_1h",
+    "minute": "stock_1m",
+    "week": "stock_1w",
+    "stock_day": "stock_1d",
+    "stock_hour": "stock_1h",
+    "stock_minute": "stock_1m",
+    "stock_week": "stock_1w",
+    "crypto_day": "crypto_1d",
+    "crypto_hour": "crypto_1h",
+    "crypto_minute": "crypto_1m",
+    "crypto_week": "crypto_1w",
+}
+
+# Legacy env keys (tests / docs); canonical resolution uses DISCORD_ROUTE_ENV_FALLBACKS.
+DISCORD_ROUTE_ENV: dict[str, str] = {
     "day": "DISCORD_WEBHOOK_DAY_TRADE",
     "hour": "DISCORD_WEBHOOK_HOUR_TRADE",
     "minute": "DISCORD_WEBHOOK_MINUTE_TRADE",
     "week": "DISCORD_WEBHOOK_WEEK_TRADE",
 }
 
-TIMEFRAME_DISCORD_ROUTE: dict[str, DiscordRoute] = {
-    "1m": "minute",
-    "5m": "minute",
-    "15m": "minute",
-    "30m": "minute",
-    "1h": "hour",
-    "1d": "day",
-    "1w": "week",
-}
 DISCORD_TIMEFRAME_ORDER: tuple[str, ...] = ("1m", "5m", "15m", "30m", "1h", "1d", "1w")
 
 NY = ZoneInfo("America/New_York")
@@ -80,8 +179,7 @@ def _clean_symbols(symbols) -> list[str]:
         raise ValueError("At least one symbol is required")
     clean = []
     for s in symbols:
-        s = str(s).strip().upper()
-        s = _YFINANCE_SYMBOL_ALIASES.get(s, s)
+        s = normalize_symbol(s)
         if not _SYMBOL_RE.match(s):
             raise ValueError(f"Invalid symbol '{s}' - letters, digits, dots and dashes only")
         if s not in clean:
@@ -125,15 +223,37 @@ def watchlist_scan_timeframes(watchlist: dict) -> list[str]:
     return tfs
 
 
-def discord_route_for_timeframe(timeframe: str) -> DiscordRoute | None:
-    return TIMEFRAME_DISCORD_ROUTE.get(timeframe)
+def normalize_discord_route(route: str) -> str | None:
+    key = route.strip().lower()
+    if key in DISCORD_ROUTE_ALIASES:
+        return DISCORD_ROUTE_ALIASES[key]
+    if key in DISCORD_CANONICAL_ROUTES:
+        return key
+    return None
+
+
+def discord_route_for_symbol_timeframe(symbol: str, timeframe: str) -> str | None:
+    suffix = TIMEFRAME_ROUTE_SUFFIX.get(timeframe)
+    if not suffix:
+        return None
+    sym = normalize_symbol(symbol)
+    asset = "crypto" if ohlcv_source(sym) == "bybit" else "stock"
+    return f"{asset}_{suffix}"
+
+
+def discord_route_for_timeframe(timeframe: str) -> str | None:
+    """Stock route for a timeframe (legacy helper)."""
+    return discord_route_for_symbol_timeframe("SPY", timeframe)
 
 
 def discord_timeframes_available() -> list[str]:
     out: list[str] = []
     for tf in DISCORD_TIMEFRAME_ORDER:
-        route = discord_route_for_timeframe(tf)
-        if route and discord_webhook_url(route):
+        stock_route = discord_route_for_symbol_timeframe("SPY", tf)
+        crypto_route = discord_route_for_symbol_timeframe("BTC-USD", tf)
+        if (stock_route and discord_webhook_url(stock_route)) or (
+            crypto_route and discord_webhook_url(crypto_route)
+        ):
             out.append(tf)
     return out
 
@@ -349,6 +469,8 @@ def signal_already_sent(
 ) -> bool:
     if signal_key(list_id, symbol, timeframe, bar_ts, pattern_id) in sent:
         return True
+    if list_id != "default":
+        return False
     return legacy_signal_key(symbol, timeframe, bar_ts, pattern_id) in sent
 
 
@@ -442,15 +564,70 @@ def tg_send(token: str, chat_ids: list[str], text: str | None = None,
 
 # ---- Discord (incoming webhooks) ----
 
+_DISCORD_SYNC_ROUTES: dict[str, str] = {}
+_DISCORD_SYNC_MTIME: float | None = None
+
+
+def reload_discord_webhooks_cache(force: bool = False) -> None:
+    """Reload synced webhook URLs from disk (mtime-checked unless force=True)."""
+    global _DISCORD_SYNC_ROUTES, _DISCORD_SYNC_MTIME
+    path = config.DISCORD_WEBHOOKS_PATH
+    if not path.exists():
+        _DISCORD_SYNC_ROUTES = {}
+        _DISCORD_SYNC_MTIME = None
+        return
+    mtime = path.stat().st_mtime
+    if not force and _DISCORD_SYNC_MTIME == mtime and _DISCORD_SYNC_ROUTES:
+        return
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        _DISCORD_SYNC_ROUTES = {}
+        _DISCORD_SYNC_MTIME = mtime
+        return
+    routes = raw.get("routes") if isinstance(raw, dict) else None
+    out: dict[str, str] = {}
+    if isinstance(routes, dict):
+        for route_key, meta in routes.items():
+            if not isinstance(meta, dict):
+                continue
+            url = (meta.get("url") or "").strip()
+            if url:
+                out[str(route_key)] = url
+    _DISCORD_SYNC_ROUTES = out
+    _DISCORD_SYNC_MTIME = mtime
+
+
+def _webhook_url_from_env_keys(keys: tuple[str, ...]) -> str | None:
+    for env_key in keys:
+        url = (os.getenv(env_key) or "").strip()
+        if url:
+            return url
+    return None
+
+
+def _webhook_url_from_sync_file(canon: str) -> str | None:
+    reload_discord_webhooks_cache()
+    return _DISCORD_SYNC_ROUTES.get(canon)
+
+
 def discord_webhook_url(route: str | None) -> str | None:
-    if route not in DISCORD_ROUTES:
+    if not route:
         return None
-    url = (os.getenv(DISCORD_ROUTE_ENV[route]) or "").strip()
-    return url or None
+    canon = normalize_discord_route(route)
+    if not canon:
+        return None
+    keys = DISCORD_ROUTE_ENV_FALLBACKS.get(canon)
+    if not keys:
+        return None
+    url = _webhook_url_from_env_keys(keys)
+    if url:
+        return url
+    return _webhook_url_from_sync_file(canon)
 
 
 def discord_configured() -> dict[str, bool]:
-    return {r: bool(discord_webhook_url(r)) for r in DISCORD_ROUTES}
+    return {r: bool(discord_webhook_url(r)) for r in DISCORD_CANONICAL_ROUTES}
 
 
 def dc_send(webhook_url: str, text: str | None = None, photo: bytes | None = None) -> bool:

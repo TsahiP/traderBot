@@ -28,6 +28,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "")  # empty = auto-pick a chat model from LM
 SIGNAL_CONFIG_PATH = OUTPUT_DIR / "signal_config.json"
 SIGNAL_LOG_PATH = OUTPUT_DIR / "signal_log.json"
 SIGNAL_HEARTBEAT_PATH = OUTPUT_DIR / "signal_heartbeat.json"
+DISCORD_WEBHOOKS_PATH = OUTPUT_DIR / "discord_webhooks.json"
 SIGNAL_MAX_LOG = 1000          # sent alerts kept in the log (also dedupe source)
 
 LOG_DIR.mkdir(exist_ok=True)

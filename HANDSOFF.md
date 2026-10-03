@@ -14,8 +14,8 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
 | Backend API | Python 3.12 · Flask | `dashboard.py`, port `8000`, API-only |
 | Strategy/engine | pandas | `strategies.py` (registry) + `engine.py` — single source of truth |
 | Live trading | alpaca-py (paper) | `livebot.py` |
-| Signal alerts | yfinance + bar-close scheduler + matplotlib | `signalbot.py` — candlestick patterns → Telegram + optional Discord (text + chart image) |
-| Historical data | yfinance | backtests, on-demand downloads |
+| Signal alerts | yfinance or Bybit + bar-close scheduler + matplotlib | `signalbot.py` — candlestick patterns → Telegram + optional Discord (text + chart image). Tickers ending in `-USD` use Bybit spot |
+| Historical data | yfinance; Bybit spot for `*-USD` | backtests, on-demand downloads. `BTC`/`ETH` alias to `BTC-USD`/`ETH-USD` |
 | Local LLM advisor | LM Studio (OpenAI-compatible) | `/api/analyze` re-runs a backtest and has the local model critique it |
 | Frontend | Next.js 16 (App Router) · TypeScript · Tailwind v4 | `web/`, port `3000` |
 | UI kit | shadcn/ui (nova preset, Base UI) | components in `web/src/components/ui/` |
@@ -39,14 +39,14 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
                   │  └────────────────┘  │
                   └──────┬───────┬───────┘
                          │       │
-              livebot.py │       │ yfinance (on-demand)
+              livebot.py │       │ yfinance (stocks) / Bybit spot (*-USD)
               (Alpaca     │       │  daily: BACKTEST_START→now
                paper)     │       │  intraday: period-capped (7d/60d/730d)
                           │       ▼
                           ▼    output/data_*.csv (CLI only)
                    output/live_trades.csv
 
- signalbot.py ── yfinance per (watchlist × symbol × timeframe) when each bar closes; config re-read each scheduler wake
+ signalbot.py ── yfinance (stocks) or Bybit spot (*-USD) per (watchlist × symbol × timeframe) when each bar closes; config re-read each scheduler wake
    candle_patterns.detect_all() on last closed bar → Telegram and/or Discord text + PNG chart (per watchlist channel TFs)
    state: output/signal_config.json · signal_log.json (dedupe) · signal_heartbeat.json
  ```
@@ -70,9 +70,15 @@ npm run dev                # UI  :3000  (or npm run build && npm start)
 ```
 
 Optional envs: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` (paper keys, in `.env` —
-gitignored). Without them the dashboard still works on backtest data. Signal bot:
-`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`; optional Discord per route:
-`DISCORD_WEBHOOK_DAY_TRADE`, `DISCORD_WEBHOOK_HOUR_TRADE`, `DISCORD_WEBHOOK_MINUTE_TRADE`, `DISCORD_WEBHOOK_WEEK_TRADE`.
+gitignored). Without them the dashboard still works on backtest data. Crypto
+bars (`BTC-USD`, or `BTC`/`ETH` which alias to it): `BYBIT_API_KEY`,
+`BYBIT_SECRET_KEY` — market data only, no Bybit orders. Signal bot:
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`; optional Discord webhooks per stock/crypto
+timeframe and news (`DISCORD_WEBHOOK_STOCK_*`, `DISCORD_WEBHOOK_CRYPTO_*`,
+`DISCORD_WEBHOOK_*_NEWS`; legacy `DISCORD_WEBHOOK_*_TRADE` still backs stock routes).
+`DISCORD_BOT_TOKEN` + `DISCORD_GUILD_ID` enable **Sync from Discord** (channel names
+`stock-1h`, `crypto-5m`, `stock-news`, … → `output/discord_webhooks.json`; env URLs
+override synced file).
 
 ## 4. Project layout
 
@@ -82,11 +88,16 @@ tradebot/
 ├── strategy.py        # SMA signals: compute_signals(df, fast, slow) -> signal col; latest_signal()
 ├── strategies.py      # STRATEGIES registry: sma_crossover, vwap_reversion, opening_range_breakout, rsi_mean_reversion
 ├── engine.py          # run_backtest() (shorts, EOD, costs), compute_metrics() — shared by CLI + API
+├── market_symbols.py  # normalize tickers; `-USD` means Bybit spot (`BTC-USD` → `BTCUSDT`)
+├── bybit_client.py    # signed Bybit v5 spot klines (no orders)
+├── market_data.py     # fetch_ohlcv(): Bybit for `*-USD`, yfinance otherwise
 ├── backtest.py        # CLI: downloads data, runs engine, writes output/*.csv, prints report
 ├── livebot.py         # paper bot loop: market clock, daily bars, market orders, logs trades
-├── signalbot.py       # signal bot loop: poll yfinance per config, detect patterns, alert Telegram (text + chart PNG)
+├── signalbot.py       # signal bot loop: poll yfinance or Bybit per config, detect patterns, alert Telegram (text + chart PNG)
 ├── candle_patterns.py # 6 strong Japanese-candlestick detectors + PATTERNS registry {id: label/direction/bars}
 ├── signals.py         # shared state for the Signals feature: config load/save/validate, signal log + dedupe keys, heartbeat, Telegram + Discord webhook send (text/photo)
+├── discord_channel_routes.py  # Discord channel/category name → canonical route (stock_1h, …)
+├── discord_sync.py    # guild channel scan → output/discord_webhooks.json
 ├── chart_image.py     # render_candles() — dark-theme PNG: candles + alert bar highlight + long/short entry/stop/target overlay
 ├── dashboard.py       # Flask API (see §7 for endpoints)
 ├── start-web.ps1      # launches API + frontend + browser
@@ -137,6 +148,7 @@ tradebot/
 | `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{lists: [{id, name, symbols, telegram_timeframes[], discord_timeframes[], patterns}]}` — per-channel timeframe sets; legacy `timeframes` on a list (or flat file) applies to both channels on load; `discord_timeframes` may include `1w` (weekly bars, yfinance `1wk`; legacy `w` coerces to `1w`) and may list TFs whose webhook is not yet set (UI shows “no webhook”; bot retries until env is wired); Telegram timeframes do not include `1w`; each list is its own watchlist with its own scan schedule; legacy `poll_minutes` / `discord_route` on disk are stripped on save |
 | `output/signal_log.json` | `signalbot.py` | every sent alert incl. dedupe key (`list_id\|SYMBOL\|tf\|bar_ts\|pattern`) — retried until required channel sends succeed; capped at 1000 entries |
 | `output/signal_heartbeat.json` | `signalbot.py` | `{ts}` of the last scheduler wake — `/api/signals/status` treats the bot as running when age &lt; `SIGNAL_HEARTBEAT_STALE_SECONDS` (120 s) |
+| `output/discord_webhooks.json` | `discord_sync.py` / `POST /api/signals/discord-sync` | synced route → webhook URL + channel metadata; used when env has no URL for that route |
 | `logs/signalbot.log` | `signalbot.py` | wake/idle, scan result per job, SIGNAL, dedupe/delivery warnings |
 
 Note: the equity CSV has **tz-aware timestamps** (`-05:00`); `dashboard.py`
@@ -154,18 +166,24 @@ if you regenerate the file differently.
 | `GET /api/strategies` | — | registry `[{id, label, description, timeframes[], flat_eod, default_allow_short, default_timeframe, params[{key,label,min,max,step,default,int?,unit?}]}]` — drives the lab form |
 | `GET /api/backtest/run` | `symbol` (def SPY) `strategy` (def sma_crossover) `timeframe` (def 1d) `start` `end` (optional `YYYY-MM-DD`, inclusive; intraday requests clamped to the data window) `qty` `capital` `allow_short` (`true`/`false`) `cost_per_share` + per-strategy params (`fast`,`slow`,`deviation_pct`,`exit_pct`,`range_minutes`,`tp_mult`,`sl_mult`,`max_range_pct`,`rsi_period`,`oversold`,`overbought`,`exit_level`) | `{meta, metrics{...costs_total}, series{OHLCV+smas+equity ≤800 bars}, markers[{index, date, side: buy\|sell, eod?, price}], trades[{..., side, exit_type: signal\|eod, costs}]}` |
 | `POST /api/analyze` | JSON body = same params as `/api/backtest/run` | re-runs the backtest, digests results + allowed param ranges, and returns `{model, analysis}` from the local LLM (`503` when LM Studio is unreachable) |
-| `GET /api/signals/config` | — | `{config: {lists: [...]}, patterns: [...], telegram_configured, discord_configured: {day, hour, minute, week}, discord_available_timeframes: string[]}` — Discord TF list = TFs whose webhook env is set (`1m`–`30m`→minute, `1h`→hour, `1d`→day, `1w`→week) |
+| `GET /api/signals/config` | — | `{config: {lists: [...]}, patterns: [...], telegram_configured, discord_configured: {stock_1m, …, crypto_news}, discord_available_timeframes: string[]}` — TF list = timeframes where stock or crypto webhook resolves |
 | `POST /api/signals/config` | JSON object = same shape as `config` (symbols uppercased/deduped, list ids/names unique; legacy `timeframes` fills both channel arrays if channel fields omitted) | validates Telegram timeframes (`1m 5m 15m 30m 1h 1d`), Discord timeframes (`1m`–`1w`; may be empty), and pattern ids, writes `output/signal_config.json`, returns the saved config; `400` if body is not a JSON object or validation fails |
 | `GET /api/signals/status` | — | `{running, last_check?, heartbeat_age_s?}` from the heartbeat file |
 | `GET /api/signals/history` | `limit` (def 50) | `{signals: [...]}` newest first — every alert ever sent (key, ts, list, symbol, timeframe, pattern_id, label, direction, close/entry/stop/target, bar_ts) |
 | `POST /api/signals/test` | — | sends a plain "test" message to Telegram so you can verify the keys; `{ok}` or `502` with the API error |
-| `POST /api/signals/discord-test` | JSON `{route: day\|hour\|minute\|week}` | sends a test message to the matching `DISCORD_WEBHOOK_*` env URL; `{ok}` or `400`/`502` |
+| `POST /api/signals/discord-test` | JSON `{route: stock_1m\|…\|crypto_news}` (legacy aliases `day`, `hour`, `minute`, `week` → stock routes) | test message to resolved webhook (env, then synced file); `{ok}` or `400`/`502` |
+| `GET /api/signals/discord-sync` | — | last sync snapshot (no Discord API call): `{synced_at?, routes{route→channel_name}, unmatched_channels[], conflicts[]}` |
+| `POST /api/signals/discord-sync` | JSON `{create_webhooks?: bool}` (default false) | scan guild channels, match names, write `output/discord_webhooks.json`; `{synced_at, routes[], unmatched_channels, conflicts, skipped_no_webhook?}` or `400` if bot token/guild missing |
 
 Data windows per timeframe: `1d` → `BACKTEST_START` (2009); `1m` → 7 days;
 `5m`/`15m`/`30m` → 60 days; `1h` → 730 days (yfinance caps). Intraday
 requests with a `start` older than the cap are clamped to the window
 (default no-range intraday run = full window, ~60 *trading* days). Daily
 `end` is inclusive (backend adds one day for yfinance's exclusive end).
+Tickers ending in `-USD` (`BTC` and `ETH` normalize to `BTC-USD` / `ETH-USD`)
+load Bybit spot klines (`BTCUSDT`) instead of yfinance. Missing
+`BYBIT_API_KEY` or `BYBIT_SECRET_KEY` returns `400`. The live SPY bot stays
+on Alpaca paper and never sends Bybit orders.
 
 Errors: `400` invalid params (unknown strategy, bad timeframe for the
 strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
@@ -181,7 +199,10 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   `run(LabValues)`), `useLlmAnalysis` (POST `/api/analyze` with the run
   params, returns `{model, analysis}`), `useSignalsConfig` (fetched once; the
   form remounts via a config-derived key after save — no setState-in-effect),
-  `useSignalsStatus/useSignalsHistory` (30 s polling).
+  `useSignalsStatus/useSignalsHistory` (30 s polling),
+  `useDiscordSyncStatus` (last guild sync snapshot, fetched on mount),
+  `syncDiscordWebhooks(createWebhooks?)` and `sendDiscordSignalTest(route)` (POST
+  mutations for Discord sync and per-route test messages).
 - **Validation:** `LabSchema` (zod) — `z.discriminatedUnion("strategy", [...])`
   with a `superRefine` for cross-field rules (fast<slow, exit<deviation,
   oversold<exit<overbought); coerce numbers; RHF typed as
@@ -215,10 +236,12 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   retry; don't open CSVs in Excel while backtesting.
 - Paper orders assume instant fills; `livebot.py` reads `filled_avg_price`
   from the order with a last-close fallback.
-- Ticker symbols are user input to yfinance — a typo yields a clean 404,
-  not a crash.
-- `.env` holds **paper** keys only. Never add live keys; the code hardcodes
-  `paper=True`.
+- Ticker symbols are user input — a typo yields a clean 404, not a crash.
+  `-USD` tickers that Bybit does not list also 404 when the kline list is empty.
+- `.env` holds **paper** Alpaca keys only. Never add live Alpaca keys; the code
+  hardcodes `paper=True`. Bybit keys are for spot **candles** only (`*-USD`);
+  this repo does not place Bybit orders. Daily crypto candles are UTC, and the
+  client drops a candle that has not closed yet (up to 40 pages × 1000 bars).
 
 ## 10. Extending
 
@@ -288,8 +311,10 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   without `list_id|` still suppress re-sends after upgrade. Failed or
   misconfigured channel sends are retried on the next scheduler wake (config is
   re-read each wake).
-- **Crypto symbols:** on save/load, `BTC` and `ETH` normalize to yfinance spot
-  tickers `BTC-USD` and `ETH-USD` (bare `BTC`/`ETH` on Yahoo are Grayscale ETFs).
+- **Crypto symbols:** on save/load, `BTC` and `ETH` normalize to `BTC-USD` and
+  `ETH-USD`. Any ticker ending in `-USD` is fetched from Bybit spot
+  (`BTC-USD` → `BTCUSDT`), not yfinance. Other tickers stay on yfinance.
+  Bare `BTC`/`ETH` on Yahoo are Grayscale ETFs.
 - **Verified end-to-end:** all five `/api/signals/*` endpoints (incl. 400 on bad
   timeframe), test message delivered to Telegram, and one real alert — TSLA 15m
   bearish engulfing on the last closed bar — sent with chart image and shown in

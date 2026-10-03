@@ -6,6 +6,8 @@ import { HttpError, apiFetcher } from "@/lib/api";
 import {
   ApiError,
   DiscordRoute,
+  DiscordSyncRunResponse,
+  DiscordSyncStatus,
   SignalsConfig,
   SignalsConfigResponse,
   SignalsHistoryResponse,
@@ -69,4 +71,16 @@ export function sendSignalTest() {
 
 export function sendDiscordSignalTest(route: DiscordRoute) {
   return postJson<{ ok: boolean }>("/api/signals/discord-test", { route });
+}
+
+export function useDiscordSyncStatus() {
+  return useSWR<DiscordSyncStatus>("/api/signals/discord-sync", (url: string) =>
+    apiFetcher(url, DiscordSyncStatus),
+  );
+}
+
+export function syncDiscordWebhooks(createWebhooks = false) {
+  return postJson<DiscordSyncRunResponse>("/api/signals/discord-sync", {
+    create_webhooks: createWebhooks,
+  });
 }

@@ -29,6 +29,17 @@ live paper bot, so what you backtest is what you trade.
    The bot always talks to the **paper** account - it can never trade real
    money.
 
+   **Crypto bars** (`BTC-USD`, `ETH-USD`, or `BTC` / `ETH` which become those
+   tickers): add Bybit keys to the same `.env`. A ticker that ends in `-USD`
+   loads spot candles from Bybit (`BTC-USD` → `BTCUSDT`). Stock tickers stay
+   on yfinance, and the live bot stays on Alpaca paper. These keys are for
+   market data only — the app does not send Bybit orders.
+
+   ```text
+   BYBIT_API_KEY=
+   BYBIT_SECRET_KEY=
+   ```
+
 ## 1. Backtest first (no keys needed)
 
 ```powershell
@@ -37,7 +48,9 @@ python backtest.py
 
 Downloads ~15 years of SPY history via yfinance, simulates the strategy
 (orders execute at the next bar's open), and prints total return, CAGR,
-max drawdown, trade count and win rate versus buy-and-hold. Details are
+max drawdown, trade count and win rate versus buy-and-hold. Set `SYMBOL` in
+`config.py` to a `-USD` ticker (for example `BTC-USD`) to download Bybit
+spot daily bars instead — that path needs the Bybit keys above. Details are
 written to `output/trades.csv` and `output/equity_curve.csv`.
 
 Note: commission/slippage are not modelled; intraday fills may differ
@@ -88,10 +101,11 @@ truth. Main areas:
   separate **Telegram** and **Discord** timeframe sets per list). The signal bot
   scans each list on its own bar-close schedule and pushes alerts with a chart
   image when a pattern completes on the last closed bar. **Discord** timeframes
-  map automatically to day/hour/minute/week webhooks (`1d`→day, `1h`→hour,
-  `1m`/`5m`/`15m`/`30m`→minute, `1w`→week); the UI only offers Discord TFs whose
-  webhook is set in `.env`. Legacy configs with a single `timeframes` array apply
-  to both channels. Test buttons per webhook route remain on the Discord card.
+  route by symbol (stocks vs `-USD` crypto) and timeframe (`1m` … `1w`, plus
+  news channels); set webhooks in `.env` or **Sync from Discord**. The UI only
+  offers Discord TFs where a webhook resolves. Legacy configs with a single
+  `timeframes` array apply to both channels. Test buttons per route on the
+  Discord card.
 
 Works with or without Alpaca keys — without them the tape falls back to the
 latest backtest bar. Run `livebot.py` alongside and watch paper trades appear
@@ -119,22 +133,20 @@ Logs: `logs/signalbot.log`. Stop with `Ctrl+C`.
 Use **Send test** on the Telegram card in the UI to verify.
 
 **Discord** (optional, per watchlist `discord_timeframes` — same message and
-chart as Telegram when both are selected for that bar). Add incoming-webhook URLs
-to `.env` (never commit them):
-
-| Variable | Channel |
-|---|---|
-| `DISCORD_WEBHOOK_DAY_TRADE` | Day-trade room |
-| `DISCORD_WEBHOOK_HOUR_TRADE` | Hour-trade room |
-| `DISCORD_WEBHOOK_MINUTE_TRADE` | Minute-trade room |
-| `DISCORD_WEBHOOK_WEEK_TRADE` | Week-trade room |
+chart as Telegram when both are selected for that bar). Webhooks route by **symbol**
+(stocks vs `-USD` crypto) and **timeframe** (separate channels for `1m`, `5m`,
+`15m`, `30m`, `1h`, `1d`, `1w`). Legacy `DISCORD_WEBHOOK_*_TRADE` URLs still
+work as fallbacks for the matching stock timeframe. See `.env.example` for
+`DISCORD_WEBHOOK_STOCK_*`, `DISCORD_WEBHOOK_CRYPTO_*`, and news webhooks. Or use
+**Sync from Discord** on the Signals tab (`DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`;
+channels named `stock-1h`, `crypto-5m`, etc.) — env webhooks still override the synced file.
 
 In each watchlist, pick **Discord timeframes** (multi-select; includes **`1w`**
-for weekly candles — Telegram does not). Timeframes map to the day/hour/minute/week
-webhooks above. Saved selections stay on disk even if a webhook is temporarily
-missing; the UI labels them and the bot retries delivery after you fix `.env`.
-Use the test buttons on the Discord card to verify each webhook. An alert is
-logged only after **all** channels selected for that timeframe succeed.
+for weekly candles — Telegram does not). Saved selections stay on disk even if a
+webhook is temporarily missing; the UI labels them and the bot retries delivery
+after you fix `.env`. Use the test buttons on the Discord card (grouped by
+Stocks / Crypto / News). An alert is logged only after **all** channels selected
+for that timeframe succeed.
 
 More detail: `RUN.md` and `HANDSOFF.md`.
 
