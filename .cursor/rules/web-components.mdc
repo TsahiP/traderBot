@@ -1,0 +1,14 @@
+---
+description: Splitting and organizing Next.js components in web/
+globs: web/src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Web components
+
+- Use feature subfolders (e.g. `components/charts/`, `components/signals/`) with a thin orchestrator component in that folder.
+- **Do not** add root-level shim files that only re-export (e.g. `components/signals-panel.tsx` → `export { X } from "./signals/..."`). Import from the source path (e.g. `@/components/signals/signals-panel`).
+- UI: shadcn in `components/ui/` — use `gap` not `space-y`, semantic color tokens.
+- Data fetching and mutations live in `hooks/`; validation types in `lib/schemas.ts`.
+
+When a component file approaches 300 lines, extract presentational pieces and local helpers into sibling files in the same feature folder.

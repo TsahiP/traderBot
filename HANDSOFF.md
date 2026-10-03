@@ -101,8 +101,9 @@ tradebot/
         ├── app/       # layout (dark, fonts, Toaster), page.tsx (Dashboard | Lab | Signals tabs)
         ├── components/
         │   ├── charts/       # chart-theme.ts, equity-chart.tsx, lab-chart.tsx
+        │   ├── signals/      # signals-panel, watchlist-form-card, side column, history table, utils
         │   ├── ui/           # shadcn components (nova)
-        │   └── *.tsx         # ticker-tape, stat-cards, trade-ledger, lab-form, lab-results, metrics-strip, signals-panel
+        │   └── *.tsx         # ticker-tape, stat-cards, trade-ledger, lab-form, lab-results, metrics-strip
         ├── hooks/            # use-api.ts (useLive/Stats/Trades/Equity/Strategies), use-backtest-run.ts, use-signals.ts
         └── lib/              # api.ts (typed fetcher), schemas.ts (zod), format.ts (Intl), utils.ts
 ```

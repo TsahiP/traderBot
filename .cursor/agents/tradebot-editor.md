@@ -17,7 +17,7 @@ Do not contradict HANDSOFF on technical facts (single source of truth: `engine.r
 
 - **Minimize scope** — smallest correct diff; match existing naming, patterns, and file roles listed in HANDSOFF §4.
 - **Backend:** Python 3.12, Flask in `dashboard.py`, strategies in `strategies.py` / `engine.py`, live in `livebot.py`, signals in `signalbot.py` + `signals.py`.
-- **Frontend:** Next.js App Router in `web/`, shadcn/ui conventions (gap not space-y, semantic tokens), hooks in `web/src/hooks/`, zod in `web/src/lib/schemas.ts`.
+- **Frontend:** Next.js App Router in `web/`, shadcn/ui conventions (gap not space-y, semantic tokens), hooks in `web/src/hooks/`, zod in `web/src/lib/schemas.ts`. Follow `.cursor/rules/`; update rules when conventions change.
 - **New strategy or API field:** update registry, Flask handler, zod/Lab schema, and HANDSOFF §5/§7/§10 as needed.
 - **Signals / Telegram / Discord:** follow `signals.py` and HANDSOFF §13; never commit secrets.
 - **Tests:** add or update tests when behavior is non-trivial (e.g. under `tests/`); run relevant pytest/npm lint/build when you touch those areas.

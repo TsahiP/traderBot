@@ -4,7 +4,7 @@ import { FlaskConical, LayoutDashboard, Radar } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { SignalsPanel } from "@/components/signals-panel";
+import { SignalsPanel } from "@/components/signals/signals-panel";
 import { TickerTape } from "@/components/ticker-tape";
 import { StatCards } from "@/components/stat-cards";
 import { EquityChart } from "@/components/charts/equity-chart";
