@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { HttpError, apiFetcher } from "@/lib/api";
 import {
   ApiError,
+  DiscordRoute,
   SignalsConfig,
   SignalsConfigResponse,
   SignalsHistoryResponse,
@@ -64,4 +65,8 @@ export function saveSignalsConfig(cfg: SignalsConfig) {
 
 export function sendSignalTest() {
   return postJson<{ ok: boolean }>("/api/signals/test", {});
+}
+
+export function sendDiscordSignalTest(route: DiscordRoute) {
+  return postJson<{ ok: boolean }>("/api/signals/discord-test", { route });
 }

@@ -608,12 +608,26 @@ def api_signals_config():
             {"id": pid, **meta} for pid, meta in SIGNAL_PATTERNS.items()
         ],
         "telegram_configured": bool(token and signals.telegram_chat_ids()),
+        "discord_configured": signals.discord_configured(),
+        "discord_available_timeframes": signals.discord_timeframes_available(),
     })
+
+
+def _json_object_body():
+    """Parse JSON body; reject non-objects with 400."""
+    body = request.get_json(silent=True)
+    if body is None:
+        return {}, None
+    if not isinstance(body, dict):
+        return None, (jsonify({"error": "JSON body must be an object"}), 400)
+    return body, None
 
 
 @app.route("/api/signals/config", methods=["POST"])
 def api_signals_config_save():
-    body = request.get_json(silent=True) or {}
+    body, err = _json_object_body()
+    if err:
+        return err
     try:
         cfg = signals.save_config(body)
     except ValueError as exc:
@@ -624,21 +638,19 @@ def api_signals_config_save():
 @app.route("/api/signals/status")
 def api_signals_status():
     hb = signals.read_heartbeat()
-    running, last_check, age_s, poll_minutes = False, None, None, None
+    running, last_check, age_s = False, None, None
     if hb:
         try:
             ts = datetime.fromisoformat(hb["ts"])
             age_s = max(0.0, (datetime.now(ts.tzinfo) - ts).total_seconds())
-            poll_minutes = int(hb.get("poll_minutes", 5))
             last_check = hb["ts"]
-            running = age_s < poll_minutes * 60 + 90
+            running = age_s < signals.SIGNAL_HEARTBEAT_STALE_SECONDS
         except (ValueError, TypeError):
             pass
     return jsonify({
         "running": running,
         "last_check": last_check,
         "heartbeat_age_s": age_s,
-        "poll_minutes": poll_minutes,
     })
 
 
@@ -660,6 +672,22 @@ def api_signals_test():
     ok = signals.tg_send(token, chat_ids, text="tradebot signal test - Telegram is wired up")
     if not ok:
         return jsonify({"error": "Telegram rejected the message - check token/chat id and network"}), 502
+    return jsonify({"ok": True})
+
+
+@app.route("/api/signals/discord-test", methods=["POST"])
+def api_signals_discord_test():
+    body = request.get_json(silent=True) or {}
+    route = str(body.get("route", "")).strip().lower()
+    if route not in signals.DISCORD_ROUTES:
+        routes = ", ".join(signals.DISCORD_ROUTES)
+        return jsonify({"error": f"route must be one of: {routes}"}), 400
+    url = signals.discord_webhook_url(route)
+    if not url:
+        return jsonify({"error": f"{signals.DISCORD_ROUTE_ENV[route]} missing in .env"}), 400
+    ok = signals.dc_send(url, text=f"tradebot signal test - Discord {route} is wired up")
+    if not ok:
+        return jsonify({"error": "Discord rejected the message - check webhook URL and network"}), 502
     return jsonify({"ok": True})
 
 

@@ -74,7 +74,7 @@ npm run dev            # UI on http://localhost:3000
 
 The frontend is a Next.js 15+ app (shadcn/ui, SWR, zod) in `web/` — it proxies
 `/api/*` to the Flask API, so the Python engine stays the single source of
-truth. Two tabs:
+truth. Main areas:
 
 - **Dashboard** — sticky ticker tape (last close, SMAs, live signal), stat
   cards (account equity, position, realized P&L, win rate), equity curve
@@ -84,10 +84,59 @@ truth. Two tabs:
   ▲ buy / ▼ sell markers where the logic fires, volume bars, metrics and the
   full trade list. Inputs are validated with zod; API responses are schema
   checked on every fetch.
+- **Signals** — configure candlestick-pattern watchlists (symbols, patterns,
+  separate **Telegram** and **Discord** timeframe sets per list). The signal bot
+  scans each list on its own bar-close schedule and pushes alerts with a chart
+  image when a pattern completes on the last closed bar. **Discord** timeframes
+  map automatically to day/hour/minute/week webhooks (`1d`→day, `1h`→hour,
+  `1m`/`5m`/`15m`/`30m`→minute, `1w`→week); the UI only offers Discord TFs whose
+  webhook is set in `.env`. Legacy configs with a single `timeframes` array apply
+  to both channels. Test buttons per webhook route remain on the Discord card.
 
 Works with or without Alpaca keys — without them the tape falls back to the
 latest backtest bar. Run `livebot.py` alongside and watch paper trades appear
 as the bot opens and closes them.
+
+## 4. Signal bot (optional)
+
+Watches your watchlists from the **Signals** tab and sends pattern alerts
+(text + PNG chart). Config lives in `output/signal_config.json` and is re-read
+on each scheduler wake — save in the UI and the bot picks it up without a restart.
+
+```powershell
+python signalbot.py
+```
+
+Logs: `logs/signalbot.log`. Stop with `Ctrl+C`.
+
+**Telegram** (for `telegram_timeframes` alerts): set in `.env`:
+
+| Variable | Purpose |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_CHAT_ID` | Target chat or channel id (comma/space for multiple) |
+
+Use **Send test** on the Telegram card in the UI to verify.
+
+**Discord** (optional, per watchlist `discord_timeframes` — same message and
+chart as Telegram when both are selected for that bar). Add incoming-webhook URLs
+to `.env` (never commit them):
+
+| Variable | Channel |
+|---|---|
+| `DISCORD_WEBHOOK_DAY_TRADE` | Day-trade room |
+| `DISCORD_WEBHOOK_HOUR_TRADE` | Hour-trade room |
+| `DISCORD_WEBHOOK_MINUTE_TRADE` | Minute-trade room |
+| `DISCORD_WEBHOOK_WEEK_TRADE` | Week-trade room |
+
+In each watchlist, pick **Discord timeframes** (multi-select; includes **`1w`**
+for weekly candles — Telegram does not). Timeframes map to the day/hour/minute/week
+webhooks above. Saved selections stay on disk even if a webhook is temporarily
+missing; the UI labels them and the bot retries delivery after you fix `.env`.
+Use the test buttons on the Discord card to verify each webhook. An alert is
+logged only after **all** channels selected for that timeframe succeed.
+
+More detail: `RUN.md` and `HANDSOFF.md`.
 
 ## Configuration (`config.py`)
 

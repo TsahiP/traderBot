@@ -1,0 +1,33 @@
+---
+description: TradeBot conventions — docs, scope, file size, living rules
+alwaysApply: true
+---
+
+# TradeBot project rules
+
+## Source of truth
+
+Before changing code, read `HANDSOFF.md`, `README.md`, and `RUN.md` when run steps matter. Align with `.cursor/agents/tradebot-editor.md`.
+
+## Web file size (developer-owned)
+
+Target **≤300 lines** per file under:
+
+- `web/src/app/**`
+- `web/src/components/**` except `ui/` (shadcn)
+- `web/src/hooks/**`
+- `web/src/lib/**`
+
+**Excluded:** `web/src/components/ui/**`, generated files (`next-env.d.ts`, auto-managed Next blocks in `AGENTS.md`).
+
+If a file is at or over the limit, split by responsibility (feature subfolder, hook, `lib/` helper) before adding large blocks.
+
+No pass-through re-export files at `components/` root — import from the feature folder (see `web-components.mdc`).
+
+## Living rules
+
+When a new convention is agreed (architecture, naming, limits), add or update a focused `.mdc` in `.cursor/rules/` in the same session. One concern per file; clear `description` in frontmatter.
+
+## Python
+
+No line-count rule unless a separate `.mdc` is added later.
