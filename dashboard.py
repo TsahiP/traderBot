@@ -666,7 +666,13 @@ def api_signals_history():
         limit = min(max(int(request.args.get("limit", 50)), 1), 200)
     except ValueError:
         limit = 50
-    return jsonify({"signals": signals.read_signals(limit)})
+    include_filtered = request.args.get("include_filtered", "").lower() in ("1", "true", "yes")
+    return jsonify({"signals": signals.read_signals(limit, include_filtered=include_filtered)})
+
+
+@app.route("/api/signals/stats")
+def api_signals_stats():
+    return jsonify(signals.signal_stats())
 
 
 @app.route("/api/signals/test", methods=["POST"])

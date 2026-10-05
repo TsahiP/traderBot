@@ -10,6 +10,45 @@ export const SignalPattern = z.object({
 });
 export type SignalPattern = z.infer<typeof SignalPattern>;
 
+export const AnalysisChecks = z.object({
+  trend: z.boolean().default(false),
+  volume: z.boolean().default(false),
+  rsi: z.boolean().default(false),
+  macd: z.boolean().default(false),
+  support: z.boolean().default(false),
+});
+export type AnalysisChecks = z.infer<typeof AnalysisChecks>;
+
+export const SignalAnalysis = z.object({
+  enabled: z.boolean().default(false),
+  block: z.boolean().default(false),
+  min_score: z.number().int().min(1).max(5).default(3),
+  show_details: z.boolean().default(true),
+  checks: AnalysisChecks.default({
+    trend: false,
+    volume: false,
+    rsi: false,
+    macd: false,
+    support: false,
+  }),
+});
+export type SignalAnalysis = z.infer<typeof SignalAnalysis>;
+
+export const ConfluenceCheck = z.object({
+  id: z.string(),
+  label: z.string(),
+  passed: z.boolean().nullable(),
+  detail: z.string(),
+});
+export type ConfluenceCheck = z.infer<typeof ConfluenceCheck>;
+
+export const Confluence = z.object({
+  score: z.number().int(),
+  total: z.number().int(),
+  checks: z.array(ConfluenceCheck),
+});
+export type Confluence = z.infer<typeof Confluence>;
+
 export const DISCORD_ROUTE_IDS = [
   "stock_1m",
   "stock_5m",
@@ -43,6 +82,7 @@ export const WatchList = z
     timeframes: z.array(z.string()).optional(),
     patterns: z.array(z.string()),
     discord_route: DiscordRoute.nullable().optional(),
+    analysis: SignalAnalysis.optional(),
   })
   .transform((w) => {
     const legacy = w.timeframes;
@@ -55,6 +95,7 @@ export const WatchList = z
       ...rest,
       telegram_timeframes,
       discord_timeframes,
+      analysis: SignalAnalysis.parse(w.analysis ?? {}),
     };
   });
 export type WatchList = z.infer<typeof WatchList>;
@@ -99,6 +140,9 @@ export const SignalEntry = z.object({
   target: z.number().nullable(),
   bar_ts: z.string(),
   list: z.string().optional(),
+  confluence: Confluence.optional(),
+  outcome: z.enum(["win", "loss", "expired"]).optional(),
+  filtered: z.boolean().optional(),
 });
 export type SignalEntry = z.infer<typeof SignalEntry>;
 
@@ -131,6 +175,22 @@ export const DiscordSyncRunResponse = z.object({
   skipped_no_webhook: z.array(z.string()).optional(),
 });
 export type DiscordSyncRunResponse = z.infer<typeof DiscordSyncRunResponse>;
+
+export const OutcomeBucket = z.object({
+  total: z.number(),
+  wins: z.number(),
+  losses: z.number(),
+  expired: z.number(),
+  pending: z.number(),
+});
+export type OutcomeBucket = z.infer<typeof OutcomeBucket>;
+
+export const SignalsStats = z.object({
+  by_score: z.array(OutcomeBucket.extend({ score: z.number() })),
+  sent: OutcomeBucket,
+  filtered: OutcomeBucket,
+});
+export type SignalsStats = z.infer<typeof SignalsStats>;
 
 export const SignalsHistoryResponse = z.object({ signals: z.array(SignalEntry) });
 export type SignalsHistoryResponse = z.infer<typeof SignalsHistoryResponse>;

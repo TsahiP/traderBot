@@ -131,6 +131,36 @@ def test_validate_rejects_bad_lists():
         })
 
 
+def test_analysis_defaults_when_omitted():
+    cfg = signals.validate_config({"lists": [_list()]})
+    assert cfg["lists"][0]["analysis"] == signals.default_analysis()
+
+
+def test_analysis_round_trip_and_block_requires_enabled():
+    cfg = signals.validate_config({
+        "lists": [_list(analysis={"enabled": True, "block": True, "min_score": 4})],
+    })
+    assert cfg["lists"][0]["analysis"]["enabled"] is True
+    assert cfg["lists"][0]["analysis"]["block"] is True
+    assert cfg["lists"][0]["analysis"]["min_score"] == 4
+    assert cfg["lists"][0]["analysis"]["checks"]["trend"] is False
+    off = signals.validate_config({
+        "lists": [_list(analysis={"enabled": False, "block": True, "min_score": 2})],
+    })
+    assert off["lists"][0]["analysis"]["block"] is False
+
+
+def test_analysis_rejects_bad_min_score():
+    with pytest.raises(ValueError, match="min_score"):
+        signals.validate_config({
+            "lists": [_list(analysis={"enabled": True, "min_score": 0})],
+        })
+    with pytest.raises(ValueError, match="min_score"):
+        signals.validate_config({
+            "lists": [_list(analysis={"enabled": True, "min_score": "high"})],
+        })
+
+
 def test_default_config_covers_every_pattern():
     cfg = signals.default_config()
     assert cfg["lists"][0]["patterns"] == list(PATTERNS.keys())

@@ -153,6 +153,19 @@ SIGNAL_HEARTBEAT_STALE_SECONDS = 120
 _SCHEDULER_TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
 
 
+ANALYSIS_CHECK_IDS = ("trend", "volume", "rsi", "macd", "support")
+
+
+def default_analysis() -> dict:
+    return {
+        "enabled": False,
+        "block": False,
+        "min_score": 3,
+        "show_details": True,
+        "checks": {check_id: False for check_id in ANALYSIS_CHECK_IDS},
+    }
+
+
 def _default_list() -> dict:
     return {
         "id": "default",
@@ -161,6 +174,7 @@ def _default_list() -> dict:
         "telegram_timeframes": ["1d"],
         "discord_timeframes": ["1d"],
         "patterns": list(PATTERNS.keys()),
+        "analysis": default_analysis(),
     }
 
 
@@ -316,6 +330,34 @@ def _clean_discord_timeframes(tfs) -> list[str]:
     )
 
 
+def _clean_checks(raw) -> dict:
+    incoming = raw if isinstance(raw, dict) else {}
+    return {check_id: bool(incoming.get(check_id, False)) for check_id in ANALYSIS_CHECK_IDS}
+
+
+def _clean_analysis(raw) -> dict:
+    """Per-watchlist confluence settings. Missing means analysis off."""
+    if raw is None:
+        return default_analysis()
+    if not isinstance(raw, dict):
+        raise ValueError("analysis must be an object")
+    enabled = bool(raw.get("enabled", False))
+    block = bool(raw.get("block", False)) and enabled
+    try:
+        min_score = int(raw.get("min_score", 3))
+    except (TypeError, ValueError):
+        raise ValueError("min_score must be an integer from 1 to 5") from None
+    if min_score < 1 or min_score > 5:
+        raise ValueError("min_score must be an integer from 1 to 5")
+    return {
+        "enabled": enabled,
+        "block": block,
+        "min_score": min_score,
+        "show_details": bool(raw.get("show_details", True)),
+        "checks": _clean_checks(raw.get("checks")),
+    }
+
+
 def _clean_patterns(pats) -> list[str]:
     if not isinstance(pats, list) or not pats:
         raise ValueError("At least one pattern is required")
@@ -415,6 +457,7 @@ def validate_config(cfg) -> dict:
             telegram_timeframes = _clean_timeframes(tg_raw, "Telegram timeframe")
             discord_timeframes = _clean_discord_timeframes(dc_raw)
             patterns = _clean_patterns(item.get("patterns"))
+            analysis = _clean_analysis(item.get("analysis"))
         except ValueError as exc:
             raise ValueError(f"{label}: {exc}") from exc
 
@@ -425,6 +468,7 @@ def validate_config(cfg) -> dict:
             "telegram_timeframes": telegram_timeframes,
             "discord_timeframes": discord_timeframes,
             "patterns": patterns,
+            "analysis": analysis,
         })
 
     return {"lists": out_lists}
@@ -474,7 +518,7 @@ def signal_already_sent(
     return legacy_signal_key(symbol, timeframe, bar_ts, pattern_id) in sent
 
 
-def read_signals(limit: int = 50) -> list[dict]:
+def _load_log() -> list:
     path = config.SIGNAL_LOG_PATH
     if not path.exists():
         return []
@@ -482,30 +526,76 @@ def read_signals(limit: int = 50) -> list[dict]:
         entries = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
+    return entries if isinstance(entries, list) else []
+
+
+def _write_log(entries: list) -> None:
+    _atomic_write(config.SIGNAL_LOG_PATH, json.dumps(entries[-config.SIGNAL_MAX_LOG:], indent=2))
+
+
+def read_signals(limit: int = 50, include_filtered: bool = False) -> list[dict]:
+    entries = _load_log()
+    if not include_filtered:
+        entries = [e for e in entries if not e.get("filtered")]
     return list(reversed(entries[-limit:]))
 
 
 def sent_keys() -> set[str]:
-    path = config.SIGNAL_LOG_PATH
-    if not path.exists():
-        return set()
-    try:
-        entries = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return set()
-    return {e["key"] for e in entries if "key" in e}
+    return {e["key"] for e in _load_log() if isinstance(e, dict) and "key" in e}
 
 
 def append_signal(entry: dict) -> None:
-    path = config.SIGNAL_LOG_PATH
-    entries = []
-    if path.exists():
-        try:
-            entries = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            entries = []
+    entries = _load_log()
     entries.append(entry)
-    _atomic_write(path, json.dumps(entries[-config.SIGNAL_MAX_LOG:], indent=2))
+    _write_log(entries)
+
+
+def rewrite_signals(fn) -> None:
+    """Load the log, let `fn` mutate the list, and write it back."""
+    entries = _load_log()
+    fn(entries)
+    _write_log(entries)
+
+
+def _empty_stats() -> dict:
+    return {"total": 0, "wins": 0, "losses": 0, "expired": 0, "pending": 0}
+
+
+def _tally(bucket: dict, entry: dict) -> None:
+    bucket["total"] += 1
+    outcome = entry.get("outcome")
+    if outcome == "win":
+        bucket["wins"] += 1
+    elif outcome == "loss":
+        bucket["losses"] += 1
+    elif outcome == "expired":
+        bucket["expired"] += 1
+    else:
+        bucket["pending"] += 1
+
+
+def signal_stats() -> dict:
+    """Outcome counts by confluence score, and sent vs blocked."""
+    by_score: dict[int, dict] = {}
+    sent = _empty_stats()
+    filtered = _empty_stats()
+    for entry in _load_log():
+        if not isinstance(entry, dict):
+            continue
+        _tally(filtered if entry.get("filtered") else sent, entry)
+        confluence = entry.get("confluence")
+        if not isinstance(confluence, dict):
+            continue
+        score = confluence.get("score")
+        if isinstance(score, bool) or not isinstance(score, int):
+            continue
+        bucket = by_score.setdefault(score, _empty_stats())
+        _tally(bucket, entry)
+    return {
+        "by_score": [{"score": score, **by_score[score]} for score in sorted(by_score)],
+        "sent": sent,
+        "filtered": filtered,
+    }
 
 
 # ---- heartbeat (how the API knows the bot is alive) ----

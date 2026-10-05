@@ -93,7 +93,9 @@ tradebot/
 ├── market_data.py     # fetch_ohlcv(): Bybit for `*-USD`, yfinance otherwise
 ├── backtest.py        # CLI: downloads data, runs engine, writes output/*.csv, prints report
 ├── livebot.py         # paper bot loop: market clock, daily bars, market orders, logs trades
-├── signalbot.py       # signal bot loop: poll yfinance or Bybit per config, detect patterns, alert Telegram (text + chart PNG)
+├── signalbot.py       # signal bot loop: poll yfinance or Bybit per config, detect patterns, optional confluence gate, alert Telegram (text + chart PNG)
+├── confirmations.py   # optional confluence checks (EMA 200, volume, RSI, MACD, EMA 50 / Bollinger) → score
+├── signal_outcomes.py # after each wake, mark logged alerts win / loss / expired from bars already fetched
 ├── candle_patterns.py # 6 strong Japanese-candlestick detectors + PATTERNS registry {id: label/direction/bars}
 ├── signals.py         # shared state for the Signals feature: config load/save/validate, signal log + dedupe keys, heartbeat, Telegram + Discord webhook send (text/photo)
 ├── discord_channel_routes.py  # Discord channel/category name → canonical route (stock_1h, …)
@@ -145,8 +147,8 @@ tradebot/
 | `output/data_<SYM>.csv` | `backtest.py` | raw OHLCV bars used by the run |
 | `output/live_trades.csv` | `livebot.py` | paper round trips appended live (dashboard "LIVE" rows) |
 | `logs/bot.log` | `livebot.py` | every signal/order/fill |
-| `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{lists: [{id, name, symbols, telegram_timeframes[], discord_timeframes[], patterns}]}` — per-channel timeframe sets; legacy `timeframes` on a list (or flat file) applies to both channels on load; `discord_timeframes` may include `1w` (weekly bars, yfinance `1wk`; legacy `w` coerces to `1w`) and may list TFs whose webhook is not yet set (UI shows “no webhook”; bot retries until env is wired); Telegram timeframes do not include `1w`; each list is its own watchlist with its own scan schedule; legacy `poll_minutes` / `discord_route` on disk are stripped on save |
-| `output/signal_log.json` | `signalbot.py` | every sent alert incl. dedupe key (`list_id\|SYMBOL\|tf\|bar_ts\|pattern`) — retried until required channel sends succeed; capped at 1000 entries |
+| `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{lists: [{id, name, symbols, telegram_timeframes[], discord_timeframes[], patterns, analysis}]}` — per-channel timeframe sets; `analysis` is `{enabled, block, min_score, show_details, checks}` (missing on old files loads as off / no block / min 3 / details on / every check off; `block` is forced off when `enabled` is false; `min_score` is 1–5; `checks` is `{trend, volume, rsi, macd, support}` booleans — a check set true blocks that alert when it fails, independent of the score; n/a does not block; `show_details` false keeps only the `Confluence: n/m` line in the alert); legacy `timeframes` on a list (or flat file) applies to both channels on load; `discord_timeframes` may include `1w` (weekly bars, yfinance `1wk`; legacy `w` coerces to `1w`) and may list TFs whose webhook is not yet set (UI shows “no webhook”; bot retries until env is wired); Telegram timeframes do not include `1w`; each list is its own watchlist with its own scan schedule; legacy `poll_minutes` / `discord_route` on disk are stripped on save |
+| `output/signal_log.json` | `signalbot.py` | every sent alert incl. dedupe key (`list_id\|SYMBOL\|tf\|bar_ts\|pattern`) — retried until required channel sends succeed; capped at 1000 entries. With analysis on, each row also has `confluence` `{score, total, checks[]}` and later `outcome` (`win` target first, `loss` stop first or both on the same bar, `expired` after 100 bars). Rows with `filtered: true` were blocked (score under `min_score`) and never delivered; they still dedupe and feed `/api/signals/stats` |
 | `output/signal_heartbeat.json` | `signalbot.py` | `{ts}` of the last scheduler wake — `/api/signals/status` treats the bot as running when age &lt; `SIGNAL_HEARTBEAT_STALE_SECONDS` (120 s) |
 | `output/discord_webhooks.json` | `discord_sync.py` / `POST /api/signals/discord-sync` | synced route → webhook URL + channel metadata; used when env has no URL for that route |
 | `logs/signalbot.log` | `signalbot.py` | wake/idle, scan result per job, SIGNAL, dedupe/delivery warnings |
@@ -169,7 +171,8 @@ if you regenerate the file differently.
 | `GET /api/signals/config` | — | `{config: {lists: [...]}, patterns: [...], telegram_configured, discord_configured: {stock_1m, …, crypto_news}, discord_available_timeframes: string[]}` — TF list = timeframes where stock or crypto webhook resolves |
 | `POST /api/signals/config` | JSON object = same shape as `config` (symbols uppercased/deduped, list ids/names unique; legacy `timeframes` fills both channel arrays if channel fields omitted) | validates Telegram timeframes (`1m 5m 15m 30m 1h 1d`), Discord timeframes (`1m`–`1w`; may be empty), and pattern ids, writes `output/signal_config.json`, returns the saved config; `400` if body is not a JSON object or validation fails |
 | `GET /api/signals/status` | — | `{running, last_check?, heartbeat_age_s?}` from the heartbeat file |
-| `GET /api/signals/history` | `limit` (def 50) | `{signals: [...]}` newest first — every alert ever sent (key, ts, list, symbol, timeframe, pattern_id, label, direction, close/entry/stop/target, bar_ts) |
+| `GET /api/signals/history` | `limit` (def 50), `include_filtered` (`1`/`true`/`yes`) | `{signals: [...]}` newest first — every alert ever sent (key, ts, list, symbol, timeframe, pattern_id, label, direction, close/entry/stop/target, bar_ts, optional `confluence`, `outcome`, `filtered`). Filtered (blocked) rows are omitted unless `include_filtered` is set |
+| `GET /api/signals/stats` | — | `{by_score: [{score, total, wins, losses, expired, pending}], sent: {…}, filtered: {…}}` from the signal log. `pending` = no outcome yet |
 | `POST /api/signals/test` | — | sends a plain "test" message to Telegram so you can verify the keys; `{ok}` or `502` with the API error |
 | `POST /api/signals/discord-test` | JSON `{route: stock_1m\|…\|crypto_news}` (legacy aliases `day`, `hour`, `minute`, `week` → stock routes) | test message to resolved webhook (env, then synced file); `{ok}` or `400`/`502` |
 | `GET /api/signals/discord-sync` | — | last sync snapshot (no Discord API call): `{synced_at?, routes{route→channel_name}, unmatched_channels[], conflicts[]}` |
@@ -199,7 +202,7 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   `run(LabValues)`), `useLlmAnalysis` (POST `/api/analyze` with the run
   params, returns `{model, analysis}`), `useSignalsConfig` (fetched once; the
   form remounts via a config-derived key after save — no setState-in-effect),
-  `useSignalsStatus/useSignalsHistory` (30 s polling),
+  `useSignalsStatus/useSignalsHistory/useSignalsStats` (30 s polling),
   `useDiscordSyncStatus` (last guild sync snapshot, fetched on mount),
   `syncDiscordWebhooks(createWebhooks?)` and `sendDiscordSignalTest(route)` (POST
   mutations for Discord sync and per-route test messages).
@@ -311,6 +314,21 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   without `list_id|` still suppress re-sends after upgrade. Failed or
   misconfigured channel sends are retried on the next scheduler wake (config is
   re-read each wake).
+- **Confluence** (per watchlist `analysis`, off unless `enabled`): after a
+  pattern hits, `confirmations.evaluate()` scores trend (close vs EMA 200),
+  volume (≥ 1.5× prior 20 bars; no volume → n/a), RSI(14) pullback (LONG: < 40
+  in the last 3 bars and not > 70 now; SHORT mirrored), MACD histogram
+  direction, and support (pattern extreme vs EMA 50 or Bollinger 20, 2).
+  n/a checks drop out of the denominator. The score is appended to the
+  Telegram/Discord text (`show_details: false` sends only the score line).
+  Each check in `checks` that is true is a hard filter: a fail blocks the
+  alert even when the score is high; an n/a check does not. `block` +
+  `min_score` (1–5, default 3) is a separate gate and logs the row with
+  `filtered: true` when `score < min_score` (a 0/0 score is not blocked). Daily fetch windows are `2y` (yfinance) and 730 days
+  (Bybit) so EMA 200 has history. `signal_outcomes.update_pending()` then
+  walks bars already fetched this wake and sets `outcome` (see §6). The
+  Signals tab shows the score (tooltip = checks), result, and a win-rate card.
+  Checks, config validation, and outcome resolution are unit-tested (2026-10-03).
 - **Crypto symbols:** on save/load, `BTC` and `ETH` normalize to `BTC-USD` and
   `ETH-USD`. Any ticker ending in `-USD` is fetched from Bybit spot
   (`BTC-USD` → `BTCUSDT`), not yfinance. Other tickers stay on yfinance.

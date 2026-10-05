@@ -141,6 +141,8 @@ work as fallbacks for the matching stock timeframe. See `.env.example` for
 **Sync from Discord** on the Signals tab (`DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`;
 channels named `stock-1h`, `crypto-5m`, etc.) — env webhooks still override the synced file.
 
+**Technical analysis** (per watchlist, off by default) appends a confluence score to the alert: trend vs EMA 200, volume ≥ 1.5× the prior 20 bars, an RSI pullback, MACD histogram direction, and a touch of EMA 50 or a Bollinger band. Checks without enough history are left out of the score (`3/4`). Each check has its own switch: when it is on, a fail blocks the alert on its own, separate from the score. **Show details** hides the per-check lines in the alert and the explanations in the form. **Block weak signals** still drops anything under the minimum score (default 3). Blocked rows stay in the log so the Confluence results card can compare sent vs blocked win rate (target before stop). The recent-signals table has its own **Details** switch for the score tooltip. Daily history pulled for the check is two years (stocks) or 730 days (Bybit).
+
 In each watchlist, pick **Discord timeframes** (multi-select; includes **`1w`**
 for weekly candles — Telegram does not). Saved selections stay on disk even if a
 webhook is temporarily missing; the UI labels them and the bot retries delivery

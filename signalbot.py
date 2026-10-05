@@ -15,9 +15,11 @@ import pandas as pd
 from dotenv import load_dotenv
 
 import config
+import signal_outcomes
 import signals
 from candle_patterns import PATTERNS, detect_all
 from chart_image import render_candles
+from confirmations import below_min, evaluate, failed_required, format_lines
 from market_data import fetch_ohlcv, fetch_ohlcv_period
 from market_symbols import is_bybit_crypto, normalize_symbol
 
@@ -39,7 +41,7 @@ TF_PERIOD = {
     "15m": "30d",
     "30m": "60d",
     "1h": "90d",
-    "1d": "180d",
+    "1d": "2y",
     "1w": "5y",
 }
 _TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
@@ -49,7 +51,7 @@ _BYBIT_LOOKBACK = {
     "15m": timedelta(days=30),
     "30m": timedelta(days=60),
     "1h": timedelta(days=90),
-    "1d": timedelta(days=180),
+    "1d": timedelta(days=730),
     "1w": timedelta(days=365 * 5),
 }
 
@@ -102,7 +104,14 @@ def build_levels(df: pd.DataFrame, pattern_id: str) -> dict:
     return {"entry": close, "stop": round(stop, 4), "target": (round(target, 4) if target is not None else None)}
 
 
-def build_message(symbol: str, timeframe: str, pattern_id: str, bar_ts: str, levels: dict) -> str:
+def build_message(
+    symbol: str,
+    timeframe: str,
+    pattern_id: str,
+    bar_ts: str,
+    levels: dict,
+    confluence_lines: list[str] | None = None,
+) -> str:
     meta = PATTERNS[pattern_id]
     side = "LONG" if meta["direction"] == "long" else "SHORT"
     lines = [
@@ -113,6 +122,8 @@ def build_message(symbol: str, timeframe: str, pattern_id: str, bar_ts: str, lev
     ]
     if levels["target"] is not None:
         lines.append(f"Target: ${levels['target']:.2f} (R:R 1:2)")
+    if confluence_lines:
+        lines.extend(confluence_lines)
     return "\n".join(lines)
 
 
@@ -185,6 +196,39 @@ def _try_deliver_alert(
     return tg_ok and dc_ok
 
 
+def _log_signal(
+    key: str,
+    list_name: str,
+    symbol: str,
+    timeframe: str,
+    pattern_id: str,
+    bar_ts: str,
+    levels: dict,
+    *,
+    confluence: dict | None,
+    filtered: bool,
+) -> None:
+    entry = {
+        "key": key,
+        "ts": datetime.now(NY).isoformat(timespec="seconds"),
+        "list": list_name,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "pattern_id": pattern_id,
+        "label": PATTERNS[pattern_id]["label"],
+        "direction": PATTERNS[pattern_id]["direction"],
+        "close": levels["entry"],
+        "entry": levels["entry"],
+        "stop": levels["stop"],
+        "target": levels["target"],
+        "bar_ts": bar_ts,
+        "filtered": filtered,
+    }
+    if confluence is not None:
+        entry["confluence"] = confluence
+    signals.append_signal(entry)
+
+
 def _watchlist_by_id(cfg: dict, list_id: str) -> dict | None:
     for watchlist in cfg.get("lists", []):
         if watchlist["id"] == list_id:
@@ -245,7 +289,31 @@ def _run_scan_job(
             continue
 
         levels = build_levels(df, pattern_id)
-        message = build_message(symbol, timeframe, pattern_id, bar_ts, levels)
+        analysis = watchlist.get("analysis") or {}
+        confluence = None
+        confluence_lines = None
+        if analysis.get("enabled"):
+            confluence = evaluate(df, PATTERNS[pattern_id]["direction"], PATTERNS[pattern_id]["bars"])
+            confluence_lines = format_lines(confluence, details=bool(analysis.get("show_details", True)))
+            min_score = int(analysis.get("min_score", 3))
+            missed = failed_required(confluence, analysis.get("checks"))
+            score_blocked = bool(analysis.get("block")) and below_min(confluence, min_score)
+            if score_blocked or missed:
+                _log_signal(
+                    key, list_name, symbol, timeframe, pattern_id, bar_ts, levels,
+                    confluence=confluence, filtered=True,
+                )
+                sent.add(key)
+                logger.info(
+                    "filtered %s score %s/%s (min %s, required %s)",
+                    key, confluence["score"], confluence["total"], min_score,
+                    ",".join(missed) or "-",
+                )
+                continue
+
+        message = build_message(
+            symbol, timeframe, pattern_id, bar_ts, levels, confluence_lines,
+        )
         try:
             photo = render_candles(
                 df,
@@ -265,22 +333,10 @@ def _run_scan_job(
             logger.warning("delivery failed or blocked for %s — will retry next cycle", key)
             continue
 
-        entry = {
-            "key": key,
-            "ts": datetime.now(NY).isoformat(timespec="seconds"),
-            "list": list_name,
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "pattern_id": pattern_id,
-            "label": PATTERNS[pattern_id]["label"],
-            "direction": PATTERNS[pattern_id]["direction"],
-            "close": levels["entry"],
-            "entry": levels["entry"],
-            "stop": levels["stop"],
-            "target": levels["target"],
-            "bar_ts": bar_ts,
-        }
-        signals.append_signal(entry)
+        _log_signal(
+            key, list_name, symbol, timeframe, pattern_id, bar_ts, levels,
+            confluence=confluence, filtered=False,
+        )
         sent.add(key)
         logger.info("SIGNAL %s (list: %s)", key, list_name)
 
@@ -318,6 +374,8 @@ def main() -> None:
                 cfg, list_id, list_name, symbol, timeframe, sent, token, chat_ids, bars_cache
             )
             schedule[(list_id, symbol, timeframe)] = signals.next_run_after_timeframe(timeframe, now)
+
+        signal_outcomes.update_pending(bars_cache)
 
         elapsed = time.time() - wake_start
         tg_ok = bool(token and chat_ids)

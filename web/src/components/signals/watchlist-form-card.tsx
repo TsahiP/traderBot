@@ -15,7 +15,6 @@ import {
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { saveSignalsConfig } from "@/hooks/use-signals";
 import { cn } from "@/lib/utils";
@@ -27,6 +26,8 @@ import {
   type WatchList,
 } from "@/lib/schemas";
 
+import { AnalysisField } from "./analysis-field";
+import { PatternSwitches } from "./pattern-switches";
 import { SymbolsField } from "./symbols-field";
 import { slugId } from "./utils";
 
@@ -68,6 +69,13 @@ export function WatchlistFormCard({
       telegram_timeframes: ["1d"],
       discord_timeframes: discordAvailable.includes("1d") ? ["1d"] : [],
       patterns: patterns.map((p) => p.id),
+      analysis: {
+        enabled: false,
+        block: false,
+        min_score: 3,
+        show_details: true,
+        checks: { trend: false, volume: false, rsi: false, macd: false, support: false },
+      },
     };
     setLists((prev) => [...prev, created]);
     setSelectedId(id);
@@ -112,9 +120,6 @@ export function WatchlistFormCard({
       setSaving(false);
     }
   };
-
-  const bullish = patterns.filter((p) => p.direction === "long");
-  const bearish = patterns.filter((p) => p.direction === "short");
 
   const togglePattern = (id: string) => {
     if (!selected) return;
@@ -260,37 +265,16 @@ export function WatchlistFormCard({
                 </p>
               </Field>
 
-              <Field>
-                <FieldLabel>Bullish patterns</FieldLabel>
-                <div className="flex flex-col gap-2">
-                  {bullish.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between gap-3">
-                      <span className="text-sm">{p.label}</span>
-                      <Switch
-                        size="sm"
-                        checked={selected.patterns.includes(p.id)}
-                        onCheckedChange={() => togglePattern(p.id)}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </Field>
+              <PatternSwitches
+                patterns={patterns}
+                selected={selected.patterns}
+                onToggle={togglePattern}
+              />
 
-              <Field>
-                <FieldLabel>Bearish patterns</FieldLabel>
-                <div className="flex flex-col gap-2">
-                  {bearish.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between gap-3">
-                      <span className="text-sm">{p.label}</span>
-                      <Switch
-                        size="sm"
-                        checked={selected.patterns.includes(p.id)}
-                        onCheckedChange={() => togglePattern(p.id)}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </Field>
+              <AnalysisField
+                analysis={selected.analysis}
+                onChange={(analysis) => patchSelected({ analysis })}
+              />
             </>
           )}
         </FieldGroup>
