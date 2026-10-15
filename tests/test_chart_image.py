@@ -48,3 +48,20 @@ def test_render_candles_without_levels():
     df = _sample_df()
     png = render_candles(df, "SPY", "1d", "Hammer", "long")
     assert len(png) > 1024
+
+
+def test_render_candles_with_smc_layers():
+    df = _sample_df(20)
+    entry = float(df["Close"].iloc[-1])
+    levels = {"entry": entry, "stop": entry - 2.0, "target": entry + 4.0}
+    for flags in (
+        {"zones": True, "structure": False, "liquidity": False},
+        {"zones": False, "structure": True, "liquidity": False},
+        {"zones": False, "structure": False, "liquidity": True},
+        {"zones": False, "structure": False, "liquidity": False},
+    ):
+        png = render_candles(
+            df, "SPY", "1d", "Hammer", "long", levels=levels, smc_flags=flags
+        )
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+        assert len(png) > 1024

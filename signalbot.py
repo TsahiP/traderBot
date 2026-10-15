@@ -315,6 +315,7 @@ def _run_scan_job(
             symbol, timeframe, pattern_id, bar_ts, levels, confluence_lines,
         )
         try:
+            smc = (analysis.get("smc") or {}) if analysis.get("enabled") else {}
             photo = render_candles(
                 df,
                 symbol,
@@ -322,6 +323,7 @@ def _run_scan_job(
                 PATTERNS[pattern_id]["label"],
                 PATTERNS[pattern_id]["direction"],
                 levels=levels,
+                smc_flags=smc,
             )
         except Exception as exc:
             logger.warning("chart render failed for %s: %s", key, exc)

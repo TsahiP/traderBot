@@ -150,6 +150,21 @@ def test_analysis_round_trip_and_block_requires_enabled():
     assert off["lists"][0]["analysis"]["block"] is False
 
 
+def test_analysis_smc_defaults_and_round_trip():
+    cfg = signals.validate_config({"lists": [_list()]})
+    assert cfg["lists"][0]["analysis"]["smc"] == {
+        "zones": False,
+        "structure": False,
+        "liquidity": False,
+    }
+    cfg = signals.validate_config({
+        "lists": [_list(analysis={"enabled": True, "smc": {"zones": True, "structure": True}})],
+    })
+    assert cfg["lists"][0]["analysis"]["smc"]["zones"] is True
+    assert cfg["lists"][0]["analysis"]["smc"]["structure"] is True
+    assert cfg["lists"][0]["analysis"]["smc"]["liquidity"] is False
+
+
 def test_analysis_rejects_bad_min_score():
     with pytest.raises(ValueError, match="min_score"):
         signals.validate_config({

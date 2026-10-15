@@ -75,6 +75,7 @@ export function WatchlistFormCard({
         min_score: 3,
         show_details: true,
         checks: { trend: false, volume: false, rsi: false, macd: false, support: false },
+        smc: { zones: false, structure: false, liquidity: false },
       },
     };
     setLists((prev) => [...prev, created]);

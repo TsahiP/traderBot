@@ -1,11 +1,18 @@
 "use client";
 
+import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import type { AnalysisChecks, SignalAnalysis } from "@/lib/schemas";
+import type { AnalysisChecks, SignalAnalysis, SmcOverlayFlags } from "@/lib/schemas";
 
 const MIN_SCORES = ["1", "2", "3", "4", "5"] as const;
+
+const SMC_LAYERS: { id: keyof SmcOverlayFlags; label: string }[] = [
+  { id: "zones", label: "Zones (order blocks & FVG)" },
+  { id: "structure", label: "Structure (BOS & CHoCH)" },
+  { id: "liquidity", label: "Liquidity sweeps" },
+];
 
 const CHECKS: { id: keyof AnalysisChecks; label: string; detail: string }[] = [
   { id: "trend", label: "Trend", detail: "Close above EMA 200 for long, below it for short." },
@@ -24,6 +31,9 @@ export function AnalysisField({
 }) {
   const setCheck = (id: keyof AnalysisChecks, on: boolean) =>
     onChange({ ...analysis, checks: { ...analysis.checks, [id]: on } });
+
+  const setSmc = (id: keyof SmcOverlayFlags, on: boolean) =>
+    onChange({ ...analysis, smc: { ...analysis.smc, [id]: on } });
 
   return (
     <Field>
@@ -99,6 +109,23 @@ export function AnalysisField({
               </ToggleGroup>
             </div>
           )}
+          <div className="flex flex-col gap-2">
+            <span className="text-xs text-muted-foreground">
+              Alert chart overlays (Telegram & Discord images)
+            </span>
+            {SMC_LAYERS.map((layer) => (
+              <div key={layer.id} className="flex items-center gap-3">
+                <Checkbox
+                  id={`smc-${layer.id}`}
+                  checked={analysis.smc[layer.id]}
+                  onCheckedChange={(on) => setSmc(layer.id, on === true)}
+                />
+                <label htmlFor={`smc-${layer.id}`} className="text-sm leading-none">
+                  {layer.label}
+                </label>
+              </div>
+            ))}
+          </div>
         </>
       )}
     </Field>

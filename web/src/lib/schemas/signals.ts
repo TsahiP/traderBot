@@ -19,6 +19,13 @@ export const AnalysisChecks = z.object({
 });
 export type AnalysisChecks = z.infer<typeof AnalysisChecks>;
 
+export const SmcOverlayFlags = z.object({
+  zones: z.boolean().default(false),
+  structure: z.boolean().default(false),
+  liquidity: z.boolean().default(false),
+});
+export type SmcOverlayFlags = z.infer<typeof SmcOverlayFlags>;
+
 export const SignalAnalysis = z.object({
   enabled: z.boolean().default(false),
   block: z.boolean().default(false),
@@ -30,6 +37,11 @@ export const SignalAnalysis = z.object({
     rsi: false,
     macd: false,
     support: false,
+  }),
+  smc: SmcOverlayFlags.default({
+    zones: false,
+    structure: false,
+    liquidity: false,
   }),
 });
 export type SignalAnalysis = z.infer<typeof SignalAnalysis>;
