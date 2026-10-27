@@ -75,7 +75,7 @@ def _qqq_context() -> dict:
     close = df["Close"].astype(float)
     ctx["trend"] = _above_ema_flags(close)
     try:
-        smc = snapshot_smc(df, radius=5)
+        smc = snapshot_smc(df)
         ctx["price_zone"] = smc.get("price_zone", "n/a")
         ctx["price_position_pct"] = smc.get("price_position_pct")
     except Exception:  # noqa: BLE001 - SMC context is optional

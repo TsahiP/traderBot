@@ -17,8 +17,17 @@ GRID = "#1e293b"
 TEXT = "#cbd5e1"
 HIGHLIGHT = "#f59e0b"
 RR_ALPHA = 0.25
-SMC_ZONE_ALPHA = 0.18
-LIQUIDITY_LINE = "#64748b"
+# LuxAlgo SMC palette (Colored style)
+LUX_BULL = "#089981"
+LUX_BEAR = "#F23645"
+LUX_EQ = "#878b94"
+LUX_EQ_TEXT = "#b2b5be"
+OB_BULL = "#3179f5"
+OB_BEAR = "#f77c80"
+FVG_BULL = "#00ff68"
+FVG_BEAR = "#ff0008"
+LUX_ZONE_ALPHA = 0.2
+FVG_ALPHA = 0.3
 
 
 def _tick_labels(index, n: int) -> list[str]:
@@ -73,54 +82,76 @@ def _draw_rr_overlay(ax, x0: float, x1: float, direction: str, levels: dict) -> 
     ax.axhline(entry, color=HIGHLIGHT, linestyle=":", linewidth=1.2, zorder=4)
 
 
-def _draw_smc(ax, overlay: SmcOverlay, n: int) -> None:
+def _draw_smc(ax, overlay: SmcOverlay, n: int, x_right: float | None = None) -> None:
+    """LuxAlgo SMC look: OB / FVG boxes, BOS-CHoCH lines, EQH/EQL, P/E/D zones."""
+    x_right = n - 0.5 if x_right is None else x_right
+    pd_layer = overlay.premium_discount
+    if pd_layer:
+        x0 = max(-0.5, pd_layer["x0"])
+        last = n - 0.5
+        for name, color in (("premium", LUX_BEAR), ("equilibrium", LUX_EQ), ("discount", LUX_BULL)):
+            z = pd_layer["zones"][name]
+            ax.add_patch(Rectangle((x0, z["lo"]), last - x0, z["hi"] - z["lo"], facecolor=color,
+                                   alpha=LUX_ZONE_ALPHA, edgecolor="none", zorder=1.0))
+        mid = (x0 + last) / 2
+        prem, eq, disc = (pd_layer["zones"][k] for k in ("premium", "equilibrium", "discount"))
+        ax.annotate("Premium", xy=(mid, prem["hi"]), xytext=(0, 2), textcoords="offset points",
+                    ha="center", va="bottom", color=LUX_BEAR, fontsize=7, zorder=6)
+        ax.annotate("Equilibrium", xy=(last, (eq["lo"] + eq["hi"]) / 2), xytext=(4, 0),
+                    textcoords="offset points", ha="left", va="center", color=LUX_EQ_TEXT,
+                    fontsize=7, zorder=6)
+        ax.annotate("Discount", xy=(mid, disc["lo"]), xytext=(0, -2), textcoords="offset points",
+                    ha="center", va="top", color=LUX_BULL, fontsize=7, zorder=6)
+        for key, color, va in (("top", LUX_BEAR, "bottom"), ("bottom", LUX_BULL, "top")):
+            level = pd_layer[key]
+            ax.plot([max(-0.5, pd_layer[f"{key}_x"]), x_right], [level, level],
+                    color=color, linewidth=0.9, zorder=4)
+            ax.annotate(pd_layer[f"{key}_label"], xy=(x_right, level),
+                        xytext=(0, 2 if va == "bottom" else -2), textcoords="offset points",
+                        ha="right", va=va, color=color, fontsize=6.5, zorder=6)
+
     for z in overlay.zones:
-        color = UP if z.side == "bull" else DOWN
-        x0 = max(0, z.x0)
-        x1 = min(n - 1, max(z.x1, x0))
-        width = max(x1 - x0 + 0.9, 0.4)
-        ax.add_patch(
-            Rectangle(
-                (x0, z.y_lo),
-                width,
-                z.y_hi - z.y_lo,
-                facecolor=color,
-                alpha=SMC_ZONE_ALPHA,
-                edgecolor=color,
-                linewidth=0.6,
-                linestyle="--" if z.kind == "fvg" else "-",
-                zorder=1.1,
-            )
-        )
+        x0 = max(-0.5, z.x0 - 0.5)
+        x1 = x_right if z.kind == "order_block" else min(x_right, z.x1 + 0.5)
+        if x1 <= x0:
+            continue
+        lo, hi = min(z.y_lo, z.y_hi), max(z.y_lo, z.y_hi)
+        if z.kind == "order_block":
+            color = OB_BULL if z.side == "bull" else OB_BEAR
+            ax.add_patch(Rectangle((x0, lo), x1 - x0, hi - lo, facecolor=color,
+                                   alpha=LUX_ZONE_ALPHA, edgecolor="none", zorder=1.1))
+        else:
+            color = FVG_BULL if z.side == "bull" else FVG_BEAR
+            mid = (lo + hi) / 2
+            for b_lo, b_hi in ((lo, mid), (mid, hi)):   # LuxAlgo draws two halves
+                ax.add_patch(Rectangle((x0, b_lo), x1 - x0, b_hi - b_lo, facecolor=color,
+                                       alpha=FVG_ALPHA, edgecolor=color, linewidth=0.4,
+                                       zorder=1.15))
 
     for m in overlay.structure:
         if m.bar < 0 or m.bar >= n:
             continue
-        label = m.kind
-        ax.annotate(
-            label,
-            xy=(m.bar, m.price),
-            xytext=(0, 10 if m.side == "bull" else -12),
-            textcoords="offset points",
-            ha="center",
-            color=HIGHLIGHT,
-            fontsize=8,
-            fontweight="bold",
-            zorder=5,
-        )
+        color = LUX_BULL if m.side == "bull" else LUX_BEAR
+        swing = m.scope == "swing"
+        x0 = max(-0.5, m.pivot_bar)
+        ax.plot([x0, m.bar], [m.price, m.price], color=color, linewidth=0.9 if swing else 0.7,
+                linestyle="-" if swing else (0, (3, 2)), zorder=4)
+        ax.annotate(m.kind, xy=(round((m.pivot_bar + m.bar) / 2), m.price),
+                    xytext=(0, 1.5 if m.side == "bull" else -1.5), textcoords="offset points",
+                    ha="center", va="bottom" if m.side == "bull" else "top", color=color,
+                    fontsize=7.5 if swing else 6, zorder=5)
 
-    for liq in overlay.liquidity:
-        ax.axhline(liq.level, color=LIQUIDITY_LINE, linewidth=0.9, linestyle="-.", zorder=1.15)
-        if liq.sweep_bar is not None and 0 <= liq.sweep_bar < n:
-            ax.scatter(
-                [liq.sweep_bar],
-                [liq.level],
-                marker="x",
-                color=LIQUIDITY_LINE,
-                s=36,
-                linewidths=1.2,
-                zorder=5,
-            )
+    for e in overlay.liquidity:
+        if e.bar1 < 0:
+            continue
+        color = LUX_BEAR if e.side == "bear" else LUX_BULL
+        ax.plot([max(-0.5, e.bar0), e.bar1], [e.level0, e.level1], color=color,
+                linewidth=0.8, linestyle=":", zorder=4)
+        ax.annotate("EQH" if e.side == "bear" else "EQL",
+                    xy=(round((e.bar0 + e.bar1) / 2), (e.level0 + e.level1) / 2),
+                    xytext=(0, 1.5 if e.side == "bear" else -1.5), textcoords="offset points",
+                    ha="center", va="bottom" if e.side == "bear" else "top", color=color,
+                    fontsize=6, zorder=5)
 
 
 def render_candles(
@@ -145,11 +176,10 @@ def render_candles(
     fig.patch.set_facecolor(BG)
     ax.set_facecolor(BG)
 
-    if overlay.zones or overlay.structure or overlay.liquidity:
-        _draw_smc(ax, overlay, n)
-
     rr_x0 = n - 1.0
     rr_x1 = n + 1.5
+    if overlay.zones or overlay.structure or overlay.liquidity:
+        _draw_smc(ax, overlay, n, x_right=rr_x1 if levels is not None else n - 0.2)
     if levels is not None:
         _draw_rr_overlay(ax, rr_x0, rr_x1, direction, levels)
 
@@ -186,11 +216,7 @@ def render_candles(
     ax.set_xlim(-0.8, x_right)
     lo = float(d["Low"].min())
     hi = float(d["High"].max())
-    prices = [lo, hi]
-    for z in overlay.zones:
-        prices.extend([z.y_lo, z.y_hi])
-    for liq in overlay.liquidity:
-        prices.append(liq.level)
+    prices = [lo, hi]   # SMC boxes beyond the candles get clipped, not zoomed out to
     if levels is not None:
         prices.extend([float(levels["entry"]), float(levels["stop"])])
         if levels.get("target") is not None:

@@ -104,7 +104,7 @@ tradebot/
 ├── signal_outcomes.py # after each wake, mark logged alerts win / loss / expired from bars already fetched
 ├── candle_patterns.py # 6 strong Japanese-candlestick detectors + PATTERNS registry {id: label/direction/bars}
 ├── squeeze.py         # LazyBear Squeeze Momentum (BB 20/2 + KC 20/1.5 linreg histogram): momentum_series(), squeeze_snapshot(), bar colors
-├── smc.py             # Smart Money Concepts: detect_bos_choch, detect_ob, detect_fvg, detect_equal_hl, detect_smc(window) + snapshot_smc(df, radius) dict
+├── smc.py             # Smart Money Concepts, a port of LuxAlgo SMC (LUXALGO_SETTINGS: swing 50 / internal 5, 5 internal OBs ATR+High/Low, EQH/EQL 3·0.1, FVG auto+extend 5): run_luxalgo(df) state machine, detect_smc(window) chart layers, snapshot_smc(df) dict
 ├── news_client.py     # multi-provider news fetch + merged feed for a symbol; geopolitical_headlines() for the macro step
 ├── market_context.py  # macro block for the analyst room: QQQ regime, VIX, oil (CL/BZ), ESLT, geopolitics; TTL cache (MACRO_TTL_MIN)
 ├── trade_plan.py      # step-5 execution math: round_break(), position_size(), build_trade_plan(price, smc, atr, risk_usd, holding)
@@ -401,7 +401,7 @@ no free typing. The flow:
    loop): fundamentals snapshot + news + recent signals (the old payload) plus
    new step blocks — `price_action` (gap, volume ratio, absorption/distribution),
    `ex_dividend`, `macro` (`market_context.py`, TTL-cached, `MACRO_TTL_MIN`),
-   `smc_daily`/`smc_15m` (`smc.snapshot_smc`, radius 4/2), `squeeze_daily`/
+   `smc_daily`/`smc_15m` (`smc.snapshot_smc`, LuxAlgo settings), `squeeze_daily`/
    `squeeze_15m` (`squeeze.py`), `atr_daily`, `trade_plan` (`trade_plan.py`
    entry/stop/TP1/TP2/size from `ANALYST_RISK_USD` or the modal risk), and
    `charts` with `1d`/`15m` PNG bytes (`analysis_charts.py`, last 120 bars,

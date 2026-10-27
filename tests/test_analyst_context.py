@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 
 import pandas as pd
 
@@ -10,7 +11,8 @@ def _bars(n=260, tf="d"):
     idx = pd.date_range("2026-03-02", periods=n, freq="D" if tf == "d" else "15min")
     rows = []
     for i in range(n):
-        c = 100.0 + 0.05 * i + 4.0 * ((i % 40) / 40.0)
+        # 120-bar cycle so LuxAlgo's 50-bar swings (range, targets) form
+        c = 100.0 + 0.05 * i + 4.0 * ((i % 40) / 40.0) + 8.0 * math.sin(2 * math.pi * i / 120)
         o = c - 0.2
         rows.append({"Open": o, "High": c + 0.6, "Low": c - 0.6, "Close": c, "Volume": 1000.0 + i})
     return pd.DataFrame(rows, index=idx)

@@ -1,4 +1,5 @@
-"""Analyst chart PNGs: candles + SMC overlay + Premium/EQ/Discount lines +
+"""Analyst chart PNGs: candles + LuxAlgo-style SMC (structure, internal OBs,
+FVGs, EQH/EQL, Strong/Weak High/Low, Premium/Equilibrium/Discount) +
 Squeeze Momentum subpanel, in the same dark style as chart_image.py.
 """
 from __future__ import annotations
@@ -20,10 +21,11 @@ from chart_image import (
     _draw_smc,
     _tick_labels,
 )
-from smc import detect_smc, snapshot_smc
+from smc import detect_smc
 import squeeze as sq
 
-ANALYSIS_WINDOW = 120
+ANALYSIS_WINDOW = 300
+RIGHT_PAD = 20           # bars of room for Strong/Weak lines, like the indicator
 MIN_BARS = 30
 FULL_SMC = {"zones": True, "structure": True, "liquidity": True}
 
@@ -33,11 +35,6 @@ SQUEEZE_COLORS = {
     sq.DARK_RED: "#b91c1c",
     sq.PINK: "#ff4d6d",
 }
-
-PREMIUM_LINE = "#ef5350"
-EQ_LINE = "#f59e0b"
-DISCOUNT_LINE = "#26a69a"
-
 
 def _candles(ax, d) -> None:
     for i in range(len(d)):
@@ -52,47 +49,15 @@ def _candles(ax, d) -> None:
                                facecolor=color, edgecolor="none", zorder=3))
 
 
-def _range_lines(ax, d, radius: int) -> None:
-    """Premium / Equilibrium / Discount guides from this timeframe's snapshot."""
-    lows = d["Low"].astype(float)
-    highs = d["High"].astype(float)
-    lo_p, hi_p = float(lows.min()), float(highs.max())
-    span = max(hi_p - lo_p, 1e-9)
-    ax.set_ylim(lo_p - span * 0.08, hi_p + span * 0.14)
-
-    smc = snapshot_smc(d, radius=radius)
-    rng = smc.get("range") if smc.get("ok") else None
-    if not rng:
-        return
-    guides = [
-        (float(rng["hi"]), PREMIUM_LINE, "Premium", (5, 0)),
-        (float(rng["mid"]), EQ_LINE, "EQ 50%", (0, ())),
-        (float(rng["lo"]), DISCOUNT_LINE, "Discount", (5, 0)),
-    ]
-    for level, color, label, dash in guides:
-        y_lo, y_hi = ax.get_ylim()
-        if y_lo <= level <= y_hi:
-            ax.axhline(level, color=color, linewidth=0.9, linestyle="--", zorder=1.2)
-            ax.annotate(
-                f"{label} {level:g}",
-                xy=(1.0, level),
-                xycoords=("axes fraction", "data"),
-                xytext=(2, -3),
-                textcoords="offset points",
-                ha="left", va="top",
-                color=color, fontsize=7.5, zorder=6,
-            )
-
-
-def render_analysis_chart(df, symbol: str, timeframe: str, radius: int = 2) -> bytes:
-    """Last ~120 bars: candles, SMC layers, P/E/D guides and a squeeze panel."""
+def render_analysis_chart(df, symbol: str, timeframe: str) -> bytes:
+    """Last ~300 bars: candles, LuxAlgo SMC layers and a squeeze panel."""
     if df is None or len(df) < MIN_BARS or df["Close"].isna().any():
         raise ValueError("not enough bars to render")
 
     window = min(ANALYSIS_WINDOW, len(df))
     d = df.tail(window).reset_index(drop=True)
     n = len(d)
-    overlay = detect_smc(df, window=window, flags=FULL_SMC)
+    overlay = detect_smc(df, window=window, flags=FULL_SMC, premium_discount=True)
 
     vals = sq.momentum_series(df).tail(n).reset_index(drop=True)
     colors = [
@@ -102,7 +67,7 @@ def render_analysis_chart(df, symbol: str, timeframe: str, radius: int = 2) -> b
     ]
 
     fig, (ax, ax2) = plt.subplots(
-        2, 1, figsize=(9.6, 6.2), dpi=130,
+        2, 1, figsize=(12.0, 6.8), dpi=130,
         gridspec_kw={"height_ratios": (3.0, 1.0), "hspace": 0.06},
         sharex=True,
     )
@@ -110,10 +75,11 @@ def render_analysis_chart(df, symbol: str, timeframe: str, radius: int = 2) -> b
     ax.set_facecolor(BG)
     ax2.set_facecolor(BG)
 
-    if overlay.zones or overlay.structure or overlay.liquidity:
-        _draw_smc(ax, overlay, n)
+    lo_p, hi_p = float(d["Low"].min()), float(d["High"].max())
+    span = max(hi_p - lo_p, 1e-9)
+    ax.set_ylim(lo_p - span * 0.06, hi_p + span * 0.08)
+    _draw_smc(ax, overlay, n, x_right=n - 1 + RIGHT_PAD)
     _candles(ax, d)
-    _range_lines(ax, d, radius=radius if radius >= 0 else 2)
 
     ax2.bar(range(n), [0.0 if v != v else float(v) for v in vals],
             color=colors, width=0.85, linewidth=0, zorder=2)
@@ -129,7 +95,7 @@ def render_analysis_chart(df, symbol: str, timeframe: str, radius: int = 2) -> b
         f"{symbol} · {timeframe} — SMC + Squeeze   {drift} {last_close:g}",
         color=TEXT, fontsize=12, loc="left", pad=10,
     )
-    ax.set_xlim(-0.8, n - 0.2)
+    ax.set_xlim(-0.8, n - 1 + RIGHT_PAD + 0.5)
     labels = _tick_labels(df.tail(n).index, n)
     tick_pos = list(range(0, n, max(1, (n - 1) // 5))) if n > 1 else [0]
     ax2.set_xticks(tick_pos)

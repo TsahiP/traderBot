@@ -21,13 +21,13 @@ def _sample_df(rows: int = 140) -> pd.DataFrame:
 
 
 def test_render_analysis_chart_daily():
-    png = render_analysis_chart(_sample_df(), "NVDA", "1d", radius=4)
+    png = render_analysis_chart(_sample_df(), "NVDA", "1d")
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     assert len(png) > 5000
 
 
 def test_render_analysis_chart_intraday_short_history():
-    png = render_analysis_chart(_sample_df(64), "NVDA", "15m", radius=2)
+    png = render_analysis_chart(_sample_df(64), "NVDA", "15m")
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     assert len(png) > 5000
 

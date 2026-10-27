@@ -28,10 +28,10 @@ import squeeze as squeeze_mod
 import trade_plan
 from analysis_charts import MIN_BARS as CHART_MIN_BARS, render_analysis_chart
 
-# timeframe -> (yfinance period, swing radius for snapshot/chart)
+# timeframe -> yfinance period (LuxAlgo SMC needs ~250+ bars: swing 50, ATR 200)
 TF_SPECS = {
-    "1d": {"period": "2y", "radius": 4},
-    "15m": {"period": "60d", "radius": 2},
+    "1d": {"period": "2y"},
+    "15m": {"period": "60d"},
 }
 
 ATR_PERIOD = 14
@@ -152,9 +152,8 @@ def gather_symbol_data(
     for tf, df in (("daily", daily_df), ("15m", intraday_df)):
         if df is None or len(df) < 8:
             continue
-        radius = TF_SPECS["1d" if tf == "daily" else tf]["radius"]
         data[f"smc_{tf}"] = _safe_step(
-            f"smc_{tf}", lambda df=df, radius=radius: snapshot_smc(df.reset_index(drop=True), radius=radius),
+            f"smc_{tf}", lambda df=df: snapshot_smc(df.reset_index(drop=True)),
             fetch_errors,
         )
 
@@ -229,8 +228,7 @@ def _render_charts(symbol: str, bars: dict, fetch_errors: list) -> dict:
         if df is None or len(df) < CHART_MIN_BARS:
             continue
         try:
-            radius = TF_SPECS[tf]["radius"]
-            charts[tf] = render_analysis_chart(df, symbol, tf, radius=radius)
+            charts[tf] = render_analysis_chart(df, symbol, tf)
         except Exception as exc:  # noqa: BLE001
             fetch_errors.append(f"chart {tf}: {str(exc)[:90]}")
     return charts
