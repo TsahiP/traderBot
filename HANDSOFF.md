@@ -92,15 +92,25 @@ tradebot/
 ├── bybit_client.py    # signed Bybit v5 spot klines (no orders)
 ├── market_data.py     # fetch_ohlcv(): Bybit for `*-USD`, yfinance otherwise
 ├── backtest.py        # CLI: downloads data, runs engine, writes output/*.csv, prints report
-├── livebot.py         # paper bot loop: market clock, daily bars, market orders, logs trades
+├── livebot.py         # paper bot loop: market clock, daily bars, risk-gated bracket entries (ATR stop + R target, GTC), broker-exit reconcile, state file
+├── risk.py            # pure entry gate: check_entry() -> PASS/BLOCK with reasons (stop, loss, R:R, daily loss, trades/day, duplicate, NY window, position cap, cash buffer)
 ├── signalbot.py       # signal bot loop: poll yfinance or Bybit per config, detect patterns, optional confluence gate, alert Telegram (text + chart PNG)
 ├── confirmations.py   # optional confluence checks (EMA 200, volume, RSI, MACD, EMA 50 / Bollinger) → score
 ├── signal_outcomes.py # after each wake, mark logged alerts win / loss / expired from bars already fetched
 ├── candle_patterns.py # 6 strong Japanese-candlestick detectors + PATTERNS registry {id: label/direction/bars}
+├── squeeze.py         # LazyBear Squeeze Momentum (BB 20/2 + KC 20/1.5 linreg histogram): momentum_series(), squeeze_snapshot(), bar colors
+├── smc.py             # Smart Money Concepts: detect_bos_choch, detect_ob, detect_fvg, detect_equal_hl, detect_smc(window) + snapshot_smc(df, radius) dict
+├── news_client.py     # multi-provider news fetch + merged feed for a symbol; geopolitical_headlines() for the macro step
+├── market_context.py  # macro block for the analyst room: QQQ regime, VIX, oil (CL/BZ), ESLT, geopolitics; TTL cache (MACRO_TTL_MIN)
+├── trade_plan.py      # step-5 execution math: round_break(), position_size(), build_trade_plan(price, smc, atr, risk_usd, holding)
+├── analysis_charts.py # render_analysis_chart() — dark 1D/15M PNG with SMC overlay + Premium/EQ/Discount lines + squeeze sub-panel
+├── analyst_context.py # analyst-room data assembly + LLM prompt: gather_symbol_data(), build_context_json(), analysis_messages(), run_analysis()
 ├── signals.py         # shared state for the Signals feature: config load/save/validate, signal log + dedupe keys, heartbeat, Telegram + Discord webhook send (text/photo)
 ├── discord_channel_routes.py  # Discord channel/category name → canonical route (stock_1h, …)
 ├── discord_sync.py    # guild channel scan → output/discord_webhooks.json
 ├── chart_image.py     # render_candles() — dark-theme PNG: candles + alert bar highlight + long/short entry/stop/target overlay
+├── llm_client.py      # local LM Studio (OpenAI-compatible) chat helper: strip reasoning tags, trim context, vision_user_message() for image inputs
+├── analystbot.py      # Discord analyst room: locked fundi-analyst channel + pinned ticker select + position modal -> gather -> LLM -> chunked posts + chart files
 ├── dashboard.py       # Flask API (see §7 for endpoints)
 ├── start-web.ps1      # launches API + frontend + browser
 ├── requirements.txt
@@ -133,7 +143,19 @@ tradebot/
 - Fixed quantity per trade (`qty`); optional **shorts** (`allow_short`): −1 opens a short, +1 covers; shorts need buying power at entry.
 - **Costs:** `cost_per_share` is charged on every fill (commission + slippage, both sides per round trip); tracked per trade and summed in `metrics.costs_total`. Intraday backtests are meaningless without it.
 - **Flat EOD:** strategies with `flat_eod` + any intraday timeframe force-close open positions at the last bar of each session (marked **EOD** on the chart, amber). Daily runs never flatten.
-- Live bot still runs the SMA crossover on the **last completed daily bar**, market orders, `TimeInForce.DAY`.
+- Live bot still runs the SMA crossover on the **last completed daily bar**,
+  but every entry is an Alpaca **bracket** (market buy, GTC stop-loss at
+  `STOP_ATR_MULT` × ATR(14), GTC take-profit at `TARGET_R` R), sent only after
+  `risk.check_entry()` passes (`RISK_*` in `config.py`). Each crossover bar is
+  entered once (`acted_signal_bar`), so a stop-out does not re-buy the same
+  signal. A sell signal cancels the open legs, then market-sells the position
+  qty. Exits are never risk-gated. **The backtest has no stop/target yet** —
+  live exits can differ from `engine.run_backtest()`.
+- `livebot.py` gotchas (fixed 2026-10-27): Alpaca's `BarSet.df` columns are
+  lowercase with a `(symbol, timestamp)` UTC index — `bars_from_alpaca()`
+  title-cases them and converts to NY before `compute_signals`; positions are
+  read with `get_all_positions()` so an API error aborts the cycle instead of
+  reading as "flat"; bars end 16 min ago (free plan has no recent SIP data).
 - **Gotcha (fixed):** `signal` must stay boolean-typed — a `shift()`ed bool
   Series becomes `object` dtype and `~` yields truthy `-1`. Keep the
   `.fillna(False).astype(bool)` pattern in `strategy.py`.
@@ -146,7 +168,8 @@ tradebot/
 | `output/trades.csv` | `backtest.py` | closed round trips: entry/exit date+price, side, exit_type, pnl, costs |
 | `output/data_<SYM>.csv` | `backtest.py` | raw OHLCV bars used by the run |
 | `output/live_trades.csv` | `livebot.py` | paper round trips appended live (dashboard "LIVE" rows) |
-| `logs/bot.log` | `livebot.py` | every signal/order/fill |
+| `output/livebot_state.json` | `livebot.py` | `{open_trade: {entry_date, entry_price, qty, stop, target, order_id} \| null, entries: [{date, ts, symbol, max_loss, order_id}] (7 days), acted_signal_bar, last_block}` — survives restarts; feeds the daily-loss / trades-per-day / duplicate checks. An untracked Alpaca position is adopted at `avg_entry_price` |
+| `logs/bot.log` | `livebot.py` | every signal/order/fill, risk BLOCK reasons (logged once per change) |
 | `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{lists: [{id, name, symbols, telegram_timeframes[], discord_timeframes[], patterns, analysis}]}` — per-channel timeframe sets; `analysis` is `{enabled, block, min_score, show_details, checks, smc}` (missing on old files loads as off / no block / min 3 / details on / every check off / every `smc` flag off; `block` is forced off when `enabled` is false; `min_score` is 1–5; `checks` is `{trend, volume, rsi, macd, support}` booleans — a check set true blocks that alert when it fails, independent of the score; n/a does not block; `show_details` false keeps only the `Confluence: n/m` line in the alert; `smc` is `{zones, structure, liquidity}` booleans — when `enabled`, any true flag adds that Smart Money layer to the alert PNG only, not confluence); legacy `timeframes` on a list (or flat file) applies to both channels on load; `discord_timeframes` may include `1w` (weekly bars, yfinance `1wk`; legacy `w` coerces to `1w`) and may list TFs whose webhook is not yet set (UI shows “no webhook”; bot retries until env is wired); Telegram timeframes do not include `1w`; each list is its own watchlist with its own scan schedule; legacy `poll_minutes` / `discord_route` on disk are stripped on save |
 | `output/signal_log.json` | `signalbot.py` | every sent alert incl. dedupe key (`list_id\|SYMBOL\|tf\|bar_ts\|pattern`) — retried until required channel sends succeed; capped at 1000 entries. With analysis on, each row also has `confluence` `{score, total, checks[]}` and later `outcome` (`win` target first, `loss` stop first or both on the same bar, `expired` after 100 bars). Rows with `filtered: true` were blocked (score under `min_score`) and never delivered; they still dedupe and feed `/api/signals/stats` |
 | `output/signal_heartbeat.json` | `signalbot.py` | `{ts}` of the last scheduler wake — `/api/signals/status` treats the bot as running when age &lt; `SIGNAL_HEARTBEAT_STALE_SECONDS` (120 s) |
@@ -255,8 +278,10 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   in Trade results; `/api/analyze` (dashboard.py) re-runs the test and asks
   LM Studio (`http://127.0.0.1:1234/v1`, OpenAI-compatible) for a diagnosis
   and parameter suggestions bounded by the strategy's allowed ranges.
-- **Risk controls:** stop-loss / max-position / position sizing — add in
-  `engine.run_backtest()` (backtest) and the `livebot.py` loop (live).
+- **Risk controls:** live entries are gated by `risk.py` and protected by
+  bracket legs; tests in `tests/test_risk.py` and `tests/test_livebot.py`
+  (fake Alpaca client). Still missing: the same stop/target in
+  `engine.run_backtest()`, and risk-based sizing (qty is fixed `QUANTITY`).
 - **More tickers in the live bot:** `config.SYMBOL` today; looping a list
   means tracking per-symbol open trades in `livebot.py`.
 
@@ -338,3 +363,52 @@ strategy, out-of-range params, fast ≥ slow, exit ≥ deviation, RSI ordering),
   bearish engulfing on the last closed bar — sent with chart image and shown in
   the UI history table. `signalbot.py` runs its cycle loop (one log line per
   cycle) and re-reads config each cycle, so Signals-tab edits apply live.
+
+## 14. Fundi analyst room (5-step protocol) — last verified 2026-10-24
+
+`analystbot.py` runs its own process (`python analystbot.py`) and keeps a locked
+`fundi-analyst` Discord channel: a pinned select menu (stock watchlists only) and
+no free typing. The flow:
+
+1. **Pick a ticker** → a `HoldingModal` popup asks for an optional position
+   (shares held, average price, dollar risk — default `ANALYST_RISK_USD`; blanks
+   = fresh cash entry). Validation (in `parse_holding`): shares + avg price must
+   come together and be positive; risk-only sends the custom risk with `qty: null`.
+2. **Gather** (`analyst_context.gather_symbol_data`, thread off the Discord
+   loop): fundamentals snapshot + news + recent signals (the old payload) plus
+   new step blocks — `price_action` (gap, volume ratio, absorption/distribution),
+   `ex_dividend`, `macro` (`market_context.py`, TTL-cached, `MACRO_TTL_MIN`),
+   `smc_daily`/`smc_15m` (`smc.snapshot_smc`, radius 4/2), `squeeze_daily`/
+   `squeeze_15m` (`squeeze.py`), `atr_daily`, `trade_plan` (`trade_plan.py`
+   entry/stop/TP1/TP2/size from `ANALYST_RISK_USD` or the modal risk), and
+   `charts` with `1d`/`15m` PNG bytes (`analysis_charts.py`, last 120 bars,
+   SMC overlay + squeeze sub-panel). Every sub-step is failure-isolated; errors
+   collect in `fetch_errors` / `snapshot_errors` and surface as
+   `data_problem_notes` to the model.
+3. **LLM** (`analyst_context.run_analysis`): one `ANALYST_SYSTEM_PROMPT` sits in
+   front of a compact `build_context_json(DATA)` block (step1_catalysts …
+   step5_execution + signals + watchlists + holding). All numbers are computed
+   in Python; the prompt forbids inventing numbers — quote verbatim or state a
+   data gap — and caps the reply under 650 words in fixed sections ending with
+   `## Verdict` (`GO | WAIT | AVOID - confidence X/5`). **The LLM writes the
+   briefing in Hebrew** (rule 9: flu Hebrew bullets, English section headers,
+   tickers/numbers/technical terms stay Latin, verdict line verbatim). With
+   `ANALYST_VISION=1` (default) the two chart PNGs ride along via `llm_client.vision_user_message`
+   (data-URI image parts); if the server rejects images, run_analysis retries
+   text-only. Chunks are posted with the chart files attached to the first
+   message (Discord 2000-char chunks, per-user cooldown `ANALYST_COOLDOWN_S`).
+
+Gotcha: **Bonsai 27B is a qwen35 reasoning model** — LM Studio ignores
+`chat_template_kwargs.enable_thinking=false` and routes the think phase to a
+separate `reasoning_content`; when thinking eats the budget, `content` comes
+back empty or truncated with `finish_reason: "length"`. `llm_client.llm_chat_ex`
+exposes the finish meta and `analyst_context._analysis_call` climbs a token
+ladder (12000 → 27000 → 57000, escalation on empty OR length) — observed
+~60 tok/s loaded, so a full run costs about 1–4 minutes. The system prompt
+also demands short hidden thinking and forbids inventing/approximating
+numbers (temperature 0.2). `llm_chat` keeps its old string-only signature for
+the dashboard + fundabot. Disable the images with `ANALYST_VISION=0` when it
+hurts. Tests: `tests/test_analyst_context.py` (13:
+steps offline, prompt/messages/vision/fallback, format) and
+`tests/test_analystbot.py` (12: menu, cooldown, inflight, modal validation,
+shared run helper incl. failure path).

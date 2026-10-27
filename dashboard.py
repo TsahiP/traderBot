@@ -18,11 +18,14 @@ from flask import Flask, jsonify, request
 import config
 import discord_sync
 import engine
+import funda_client
+import news_client
 import signals
 import strategies
 from bybit_client import BybitError
 from candle_patterns import PATTERNS as SIGNAL_PATTERNS
 from livebot import get_last_completed_bars
+from llm_client import llm_chat, resolve_llm_model
 from market_data import fetch_ohlcv, fetch_yfinance_history
 from market_symbols import is_bybit_crypto, is_valid_symbol, normalize_symbol
 from strategy import compute_signals, latest_signal
@@ -451,54 +454,6 @@ Rules:
 - Answer with exactly three short markdown sections: "## Diagnosis", "## Suggested configurations", "## Risks".
 - Keep it under 350 words."""
 
-_llm_model: str | None = None
-
-
-def resolve_llm_model() -> str:
-    """Pick the model to chat with: configured one, or best auto-detect."""
-    global _llm_model
-    if _llm_model:
-        return _llm_model
-    if config.LLM_MODEL:
-        _llm_model = config.LLM_MODEL
-        return _llm_model
-    import requests as _requests
-
-    r = _requests.get(f"{config.LLM_BASE_URL}/models", timeout=10)
-    r.raise_for_status()
-    ids = [m["id"] for m in r.json().get("data", [])]
-    chat_ids = [m for m in ids if "embed" not in m.lower()]
-    qwen_chat = [m for m in chat_ids if "qwen" in m.lower() and "vl" not in m.lower()]
-    pick = (
-        next((m for m in chat_ids if "hermes" in m.lower()), None)
-        or next((m for m in qwen_chat if "qwen3" in m.lower()), None)
-        or (qwen_chat[0] if qwen_chat else None)
-        or (chat_ids[0] if chat_ids else None)
-    )
-    if not pick:
-        raise RuntimeError("no chat models found in LM Studio")
-    _llm_model = pick
-    return pick
-
-
-def llm_chat(messages: list[dict]) -> str:
-    """One chat round trip against the local LM Studio server."""
-    import requests as _requests
-
-    model = resolve_llm_model()
-    r = _requests.post(
-        f"{config.LLM_BASE_URL}/chat/completions",
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": 0.4,
-            "max_tokens": 800,
-        },
-        timeout=600,
-    )
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
-
 
 def build_analysis_context(payload: dict, spec: dict) -> str:
     """Compact, model-friendly digest of a run + its allowed param ranges."""
@@ -754,6 +709,142 @@ def api_signals_discord_sync_run():
         "conflicts": result.get("conflicts") or [],
         "skipped_no_webhook": result.get("skipped_no_webhook") or [],
     })
+
+
+# ---- Fundamentals & news (fundabot / on-demand) ----
+
+FUNDI_HEARTBEAT_STALE_SECONDS = 15 * 60
+FUNDI_REFRESH_MAX = 10         # max symbols per on-demand refresh call
+
+
+@app.route("/api/fundi")
+def api_fundi():
+    """Watchlists grouped snapshots + bot status for the Fundi tab."""
+    cfg = signals.load_config()
+    lists = []
+    groups: dict[str, list[str]] = {}
+    for watchlist in cfg.get("lists", []):
+        stocks, cryptos = [], []
+        for raw in watchlist.get("symbols", []):
+            symbol = normalize_symbol(raw)
+            if not symbol:
+                continue
+            if is_bybit_crypto(symbol):
+                if symbol not in cryptos:
+                    cryptos.append(symbol)
+            elif symbol not in stocks:
+                stocks.append(symbol)
+        for symbol in stocks + cryptos:
+            groups.setdefault(symbol, [])
+        lists.append({
+            "id": watchlist["id"],
+            "name": watchlist["name"],
+            "stocks": stocks,
+            "crypto": cryptos,
+        })
+    snapshots = {}
+    for symbol in groups:
+        snap = funda_client.read_snapshot(symbol)
+        if snap is not None:  # symbols not yet refreshed are simply absent
+            snapshots[symbol] = snap
+    hb = None
+    if config.FUNDA_HEARTBEAT_PATH.exists():
+        try:
+            hb = json.loads(config.FUNDA_HEARTBEAT_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            hb = None
+    running, hb_ts, hb_age = False, None, None
+    if hb:
+        try:
+            ts = datetime.fromisoformat(hb["ts"])
+            hb_age = max(0.0, (datetime.now(ts.tzinfo) - ts).total_seconds())
+            hb_ts, running = hb["ts"], hb_age < FUNDI_HEARTBEAT_STALE_SECONDS
+        except (ValueError, TypeError, KeyError):
+            pass
+    digest_date = None
+    try:
+        digest_date = json.loads(
+            (config.FUNDA_DIR / "funda_digest.json").read_text(encoding="utf-8")
+        ).get("last_date")
+    except (json.JSONDecodeError, OSError):
+        digest_date = None
+    return jsonify({
+        "lists": lists,
+        "snapshots": snapshots,
+        "bot": {
+            "running": running,
+            "ts": hb_ts,
+            "heartbeat_age_s": hb_age,
+            "last_digest_date": digest_date,
+            "news_configured": {
+                "stocks": bool(signals.discord_webhook_url("stock_news")),
+                "crypto": bool(signals.discord_webhook_url("crypto_news")),
+            },
+        },
+        "quota": funda_client.quota_status(),
+        "keys": funda_client.configured_keys(),
+    })
+
+
+@app.route("/api/fundi/news")
+def api_fundi_news():
+    try:
+        limit = min(max(int(request.args.get("limit", 40)), 1), 200)
+    except ValueError:
+        limit = 40
+    symbol = request.args.get("symbol")
+    if symbol:
+        symbol = normalize_symbol(symbol)
+    from_signal_log = news_client.read_all_news(symbol=symbol, limit=limit)
+    return jsonify({"news": from_signal_log, "sent_count": len(news_client.sent_ids())})
+
+
+@app.route("/api/fundi/refresh", methods=["POST"])
+def api_fundi_refresh():
+    """On-demand snapshot refresh for one symbol (or 'all')."""
+    body, err = _json_object_body()
+    if err:
+        return err
+    symbol = str(body.get("symbol", "")).strip().upper()
+    force = bool(body.get("force", True))
+    if symbol in ("ALL", "ALL STOCKS", "ALL_STOCKS"):
+        cfg = signals.load_config()
+        stocks, _ = fundabot_watch_items(cfg)
+        stocks = stocks[:FUNDI_REFRESH_MAX]
+    else:
+        if not symbol:
+            return jsonify({"error": "symbol is required"}), 400
+        symbol = normalize_symbol(symbol)
+        stocks = [symbol]
+    out = {}
+    for sym in stocks:
+        try:
+            if is_bybit_crypto(sym):
+                snap = funda_client.refresh_crypto(sym, force=force)
+            else:
+                snap = funda_client.refresh_symbol(sym, force=force)
+            out[sym] = snap
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"error": f"{sym}: {str(exc)[:140]}"}), 502
+    return jsonify({
+        "refreshed": list(out.keys()),
+        "snapshots": out,
+        "quota": funda_client.quota_status(),
+    })
+
+
+def fundabot_watch_items(cfg: dict) -> tuple[list[str], list[str]]:
+    """Shared with fundabot: stock + crypto symbol union across watchlists."""
+    stocks, cryptos = [], []
+    for watchlist in cfg.get("lists", []):
+        for raw in watchlist.get("symbols", []):
+            symbol = normalize_symbol(raw)
+            if is_bybit_crypto(symbol):
+                if symbol not in cryptos:
+                    cryptos.append(symbol)
+            elif symbol and symbol not in stocks:
+                stocks.append(symbol)
+    return stocks, cryptos
 
 
 if __name__ == "__main__":

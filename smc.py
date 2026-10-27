@@ -64,21 +64,21 @@ def clean_smc_flags(raw) -> dict:
     }
 
 
-def _swing_highs_lows(df: pd.DataFrame) -> tuple[list[int], list[int]]:
+def _swing_highs_lows(df: pd.DataFrame, radius: int = SWING_RADIUS) -> tuple[list[int], list[int]]:
     n = len(df)
     highs: list[int] = []
     lows: list[int] = []
-    if n < 2 * SWING_RADIUS + 1:
+    if n < 2 * radius + 1:
         return highs, lows
     h = df["High"].astype(float)
     l = df["Low"].astype(float)
-    for i in range(SWING_RADIUS, n - SWING_RADIUS):
-        left_h = h.iloc[i - SWING_RADIUS : i]
-        right_h = h.iloc[i + 1 : i + SWING_RADIUS + 1]
+    for i in range(radius, n - radius):
+        left_h = h.iloc[i - radius : i]
+        right_h = h.iloc[i + 1 : i + radius + 1]
         if h.iloc[i] > left_h.max() and h.iloc[i] > right_h.max():
             highs.append(i)
-        left_l = l.iloc[i - SWING_RADIUS : i]
-        right_l = l.iloc[i + 1 : i + SWING_RADIUS + 1]
+        left_l = l.iloc[i - radius : i]
+        right_l = l.iloc[i + 1 : i + radius + 1]
         if l.iloc[i] < left_l.min() and l.iloc[i] < right_l.min():
             lows.append(i)
     return highs, lows
@@ -317,3 +317,110 @@ def detect_smc(df: pd.DataFrame, window: int = 30, flags: dict | None = None) ->
         )[-MAX_LIQUIDITY:]
 
     return _to_window_coords(zones, structure, liquidity, vis_start, n)
+
+
+# ──────────────────────────────────────────────────────── analyst step 3
+
+PRICE_EOL = 2  # bar must end this many bars before the last to count as a swing
+
+
+def _zone_dict(z: PriceZone) -> dict:
+    return {"kind": z.kind, "side": z.side, "lo": round(z.y_lo, 6), "hi": round(z.y_hi, 6), "bar": z.x0}
+
+
+def _nearest_below(zones: list[dict], price: float) -> dict | None:
+    """Zone fully below price, closest to it from underneath."""
+    under = [z for z in zones if z["hi"] < price]
+    return max(under, key=lambda z: z["hi"]) if under else None
+
+
+def _nearest_above(zones: list[dict], price: float) -> dict | None:
+    """Zone fully above price, closest to it from overhead."""
+    over = [z for z in zones if z["lo"] > price]
+    return min(over, key=lambda z: z["lo"]) if over else None
+
+
+def snapshot_smc(df: pd.DataFrame, radius: int = SWING_RADIUS) -> dict:
+    """Absolute-price SMC read for the analyst: range zones, nearest blocks,
+    structure and liquidity events. Detection logic is shared with detect_smc."""
+    if df is None or len(df) < 2 * radius + 1:
+        return {"ok": False, "error": "not enough bars"}
+
+    work = df.reset_index(drop=True)
+    n = len(work)
+    swing_highs, swing_lows = _swing_highs_lows(work, radius)
+    price = float(work["Close"].iloc[-1])
+
+    out: dict = {"ok": True, "price": round(price, 6)}
+
+    # dealing range of the two most recent swing extremes
+    if swing_highs and swing_lows:
+        last_high_price = float(work["High"].iloc[swing_highs[-1]])
+        last_low_price = float(work["Low"].iloc[swing_lows[-1]])
+        lo, hi = min(last_high_price, last_low_price), max(last_high_price, last_low_price)
+        span = hi - lo
+        mid = (lo + hi) / 2.0
+        pos_pct = round((price - lo) / span * 100.0, 2) if span > 0 else 50.0
+        out["range"] = {
+            "lo": round(lo, 6), "hi": round(hi, 6), "mid": round(mid, 6),
+            "lo_bar": swing_lows[-1] if last_low_price < last_high_price else swing_highs[-1],
+            "hi_bar": swing_highs[-1] if last_high_price > last_low_price else swing_lows[-1],
+        }
+        out["price_position_pct"] = pos_pct
+        out["price_zone"] = "premium" if pos_pct > 50 else "discount"
+        out["near_equilibrium"] = abs(pos_pct - 50.0) <= 5.0
+    else:
+        out["range"] = None
+        out["price_zone"] = "n/a"
+        out["price_position_pct"] = None
+        out["near_equilibrium"] = None
+
+    structure_all, obs_all = _structure_and_obs(work, swing_highs, swing_lows, 0)
+
+    unmitigated_obs = [
+        _zone_dict(z) for z in obs_all if z.x1 >= n - 1 - PRICE_EOL
+    ]
+    out["demand_below"] = _nearest_below(
+        [z for z in unmitigated_obs if z["side"] == "bull"], price
+    )
+    supply_over = [z for z in unmitigated_obs if z["side"] == "bear"]
+    out["supply_above"] = _nearest_above(supply_over, price)
+    if out["supply_above"] is not None:
+        out["wall"] = {
+            "price": out["supply_above"]["lo"],
+            "distance_pct": round((out["supply_above"]["lo"] - price) / price * 100.0, 2),
+        }
+    else:
+        out["wall"] = None
+
+    def last_of(kind: LabelKind) -> dict | None:
+        marks = [m for m in structure_all if m.kind == kind]
+        if not marks:
+            return None
+        m = marks[-1]
+        return {"side": m.side, "bar": m.bar, "price": round(float(m.price), 6)}
+
+    out["last_choch"] = last_of("CHoCH")
+    out["last_bos"] = last_of("BOS")
+
+    eq_highs = _liquidity(work, swing_highs, [], 0)
+    eq_lows = _liquidity(work, [], swing_lows, 0)
+
+    def liquid_map(marks: list[LiquidityMark]) -> dict | None:
+        if not marks:
+            return None
+        last = marks[-1]
+        return {
+            "level": round(last.level, 6),
+            "pool_bar": last.pool_bar,
+            "sweep_bar": last.sweep_bar,
+        }
+
+    out["eqh"] = liquid_map(eq_highs)
+    out["eql"] = liquid_map(eq_lows)
+
+    open_fvgs = [
+        _zone_dict(z) for z in _find_fvgs(work, 0) if z.x1 >= n - 1 - PRICE_EOL
+    ]
+    out["open_fvgs"] = open_fvgs[-4:]
+    return out

@@ -23,7 +23,7 @@ class DiscordSyncError(Exception):
 
 
 def discord_bot_credentials() -> tuple[str, str]:
-    token = (os.getenv("DISCORD_BOT_TOKEN") or "").strip()
+    token = (os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN") or "").strip()
     guild_id = (os.getenv("DISCORD_GUILD_ID") or "").strip()
     if not token or not guild_id:
         raise DiscordSyncError("DISCORD_BOT_TOKEN and DISCORD_GUILD_ID must be set in .env")

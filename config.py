@@ -5,6 +5,13 @@ BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 OUTPUT_DIR = BASE_DIR / "output"
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(BASE_DIR / ".env")  # every entrypoint inherits the same env
+except ImportError:
+    pass
+
 # ---- Strategy ----
 SYMBOL = "SPY"
 SMA_FAST = 10
@@ -19,10 +26,38 @@ BACKTEST_START = "2009-01-01"
 POLL_INTERVAL_MIN = 5    # minutes between checks
 ALPACA_PAPER = True      # always paper; never touch real money
 ALPACA_BARS_LIMIT = 300  # enough history to warm up the slow SMA
+LIVEBOT_STATE_PATH = OUTPUT_DIR / "livebot_state.json"  # open trade + today's entries (survives restarts)
+
+# ---- Live bot exits (bracket order legs held at Alpaca, GTC) ----
+ATR_PERIOD = 14          # daily ATR used to place the stop
+STOP_ATR_MULT = 2.0      # stop-loss = entry - this x ATR
+TARGET_R = 2.0           # take-profit = entry + this x (entry - stop)
+
+# ---- Live bot risk gate (risk.py; None switches a limit off, exits are never blocked) ----
+RISK_MAX_LOSS_PER_TRADE_USD = 200.0   # qty x (entry - stop)
+RISK_MAX_DAILY_LOSS_USD = 500.0       # sum of the max losses of today's entries
+RISK_MAX_TRADES_PER_DAY = 3
+RISK_MIN_REWARD_RISK = 1.5
+RISK_MAX_POSITION_PCT = 25.0          # of account equity
+RISK_CASH_BUFFER_PCT = 10.0           # cash that must stay free after a buy
+RISK_NO_ENTRIES_BEFORE = "09:45"      # NY time; skips the opening auction swings
+RISK_NO_ENTRIES_AFTER = "15:30"
 
 # ---- Local LLM advisor (LM Studio) ----
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "")  # empty = auto-pick a chat model from LM Studio
+LLM_LOAD_TIMEOUT = int(os.getenv("LLM_LOAD_TIMEOUT", "420"))  # seconds for native pre-load
+
+# ---- Discord analyst room (analystbot: select ticker -> LLM analysis) ----
+ANALYST_CHANNEL_NAME = os.getenv("DISCORD_ANALYST_CHANNEL", "fundi-analyst")
+ANALYST_COOLDOWN_S = int(os.getenv("ANALYST_COOLDOWN_S", "20"))   # per user between clicks
+ANALYST_MENU_REFRESH_MIN = float(os.getenv("ANALYST_MENU_REFRESH_MIN", "10"))
+ANALYST_NEWS_MAX = int(os.getenv("ANALYST_NEWS_MAX", "6"))        # news items fed to the model
+ANALYST_SIGNALS_MAX = int(os.getenv("ANALYST_SIGNALS_MAX", "8"))  # recent bot signals fed to the model
+ANALYST_LLM_TIMEOUT = int(os.getenv("ANALYST_LLM_TIMEOUT", "600"))
+ANALYST_RISK_USD = float(os.getenv("ANALYST_RISK_USD", "250"))   # step-5 default $ risk per trade
+ANALYST_VISION = os.getenv("ANALYST_VISION", "1").strip() not in ("0", "false", "False", "off")
+MACRO_TTL_MIN = float(os.getenv("MACRO_TTL_MIN", "10"))         # step-2 macro context cache
 
 # ---- Signal bot (candlestick patterns -> Telegram) ----
 SIGNAL_CONFIG_PATH = OUTPUT_DIR / "signal_config.json"
@@ -31,5 +66,25 @@ SIGNAL_HEARTBEAT_PATH = OUTPUT_DIR / "signal_heartbeat.json"
 DISCORD_WEBHOOKS_PATH = OUTPUT_DIR / "discord_webhooks.json"
 SIGNAL_MAX_LOG = 1000          # sent alerts kept in the log (also dedupe source)
 
+# ---- Fundamentals & news (fundabot / dashboard tab) ----
+FUNDA_DIR = OUTPUT_DIR / "funda"           # per-symbol snapshot JSONs
+NEWS_DIR = OUTPUT_DIR / "news"             # per-symbol recent news JSONs
+FUNDA_STATE_PATH = OUTPUT_DIR / "funda_state.json"       # provider quota ledger + pass timestamps
+FUNDA_HEARTBEAT_PATH = OUTPUT_DIR / "funda_heartbeat.json"
+NEWS_SENT_PATH = OUTPUT_DIR / "news_sent.json"           # pushed-item hashes (Discord dedupe)
+FUNDA_TTL_HOURS = 20           # a snapshot is fresh for ~a trading day
+NEWS_POLL_HOURS = 4            # news fetch interval
+NEWS_MAX_PER_SYMBOL = 5        # new items pushed to Discord per poll per symbol
+NEWS_MAX_PER_POLL = 25         # hard cap of pushes per poll
+NEWS_KEEP_PER_SYMBOL = 50      # items kept on disk per symbol
+NEWS_MAX_LOG = 5000            # rolling dedupe window for pushed items
+# Free-tier daily call caps (headroom below the provider's published limit)
+FMP_DAILY_CAP = 220            # FMP Basic: 250/day
+ALPHAVANTAGE_DAILY_CAP = 25    # Alpha Vantage free: 25/day + 5/min
+TWELVEDATA_DAILY_CAP = 700     # Twelve Data free: 800 credits/day
+FINNHUB_DAILY_SOFT_CAP = 4000  # 60/min free; keep a sanity ceiling on total calls
+
 LOG_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
+FUNDA_DIR.mkdir(exist_ok=True)
+NEWS_DIR.mkdir(exist_ok=True)

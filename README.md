@@ -63,8 +63,22 @@ python livebot.py
 ```
 
 - Polls Alpaca's market clock, then reads the last **completed** daily bar
-- On a buy signal with no open position -> market buy `QUANTITY` shares
-- On a sell signal with an open position -> market sell
+- On a buy signal with no open position -> a **bracket order**: market buy
+  `QUANTITY` shares plus a GTC stop-loss (`STOP_ATR_MULT` × daily ATR below
+  the entry) and a GTC take-profit (`TARGET_R` × the risk above it), both
+  held at Alpaca so they work even while the bot is off
+- Every entry must pass the **risk gate** (`risk.py`) first: a stop, max loss
+  per trade, minimum reward:risk, daily loss budget, trades per day, one
+  entry per symbol per day, the NY entry window, a position cap and a cash
+  buffer. A blocked entry is logged with every reason; exits are never blocked
+- Each crossover is acted on once — after a stop-out the bot waits for the
+  next crossover instead of buying the same signal again
+- On a sell signal with an open position -> cancel the bracket legs, then
+  market sell. A stop or target filled at the broker is recorded on the next
+  cycle
+- State (open trade, today's entries) lives in `output/livebot_state.json`, so
+  a restart keeps the entry price; a position the bot does not know is adopted
+  at Alpaca's average entry price
 - Logs every action to `logs/bot.log` (rotates at 1 MB)
 - Records every closed round trip to `output/live_trades.csv`
 
@@ -111,7 +125,105 @@ Works with or without Alpaca keys — without them the tape falls back to the
 latest backtest bar. Run `livebot.py` alongside and watch paper trades appear
 as the bot opens and closes them.
 
-## 4. Signal bot (optional)
+## 4. Fundamentals + news bot (optional)
+
+`python fundabot.py`
+
+Watches every symbol in **all** of your Signals watchlists and keeps two data sets
+fresh (sources are free tiers, ranked best -> worst, with per-provider daily
+quota tracking in `output/funda_state.json`):
+
+- **Fundamentals** (stocks): one snapshot per NY trading day after the close
+  (plus a boot catch-up for stale symbols). The chain is
+  **SEC EDGAR** (keyless, authoritative XBRL statements) → **FMP** (250/day:
+  profile, key metrics, quarterly statements) → **Finnhub** (60/min: metrics,
+  next-earnings date) → **yfinance** → **Twelve Data** (price) →
+  **Alpha Vantage** (25/day; only its still-free `GLOBAL_QUOTE` + `EARNINGS`
+  live endpoints). Every field remembers which provider supplied it. Crypto
+  symbols (`-USD`) get a market snapshot (price, mcap, rank, changes) from
+  keyless CoinGecko. Snapshots live in `output/funda/<symbol>.json`.
+- **Fundi analyst digest**: once per NY day (same after-close window, 16:10 ET)
+  every watchlist symbol gets **one Discord message** with its full
+  fundamentals snapshot (price, valuation, margins, balance sheet, 52w, next
+  earnings) **plus its latest news** — stocks to `stock_news`, crypto to
+  `crypto_news`.
+- **News**: polled every 4h and **pushed to your `stock_news` /
+  `crypto_news` Discord channels** — **Finnhub** → **FMP** → **Alpaca** (your
+  existing keys) → **Google News RSS** (keyless). Crypto news comes from
+  CoinDesk / Cointelegraph / Decrypt RSS matched per coin. Items dedupe by URL
+  across providers (`output/news_sent.json`).
+
+Fun fact: with **zero API keys** the feature still works — SEC EDGAR +
+yfinance + Google News + CoinGecko cover the essentials. Add keys to `.env`
+for the rest of the chain:
+
+```text
+FMP_API_KEY=            # financialmodelingprep.com — 250/day, get this first
+FINNHUB_API_KEY=        # finnhub.io — 60/min, news + metrics
+ALPHAVANTAGE_API_KEY=   # alphavantage.co — 25/day (either underscore spelling works)
+TWELVEDATA_API_KEY=     # twelvedata.com — 800/day, price fallback
+```
+
+The **Fundi** tab of the dashboard shows the snapshots (with per-field source
+badges and quota usage) and the merged news feed; the refresh buttons work
+even while `fundabot.py` is off. Logs: `logs/fundabot.log`.
+
+### Fundi analyst room (Discord + local LLM)
+
+```powershell
+python analystbot.py
+```
+
+A Discord room where you don't type: the bot creates (and locks) a
+`fundi-analyst` channel in your **tp-tbt** guild and pins a ticker select menu
+built from your Signals watchlists (stocks only, max 25 per row). Pick a
+ticker and a small popup asks for an optional position (shares held +
+average price + dollar risk — blanks mean a fresh cash entry). The bot then
+runs the 5-step protocol through your **local LM Studio** model and posts
+the briefing with chart images:
+
+1. **Catalysts** — fundamentals snapshot + merged news feed for the symbol.
+2. **Macro** — QQQ regime, VIX, oil, your local name (ESLT), geopolitics.
+3. **Smart Money** — SMC reads on 1D and 15M (range zone, OB demand/supply,
+   BOS/CHoCH, equal highs/lows, open FVGs).
+4. **Squeeze** — LazyBear Squeeze Momentum color + squeeze state on both
+   timeframes.
+5. **Execution** — ATR, absorption/distribution read, the trade plan
+   (entry break, stop, TP1/TP2, position size from your dollar risk) and,
+   if you filled in the popup, your live position P&L.
+
+Every number is computed in code; the LLM only phrases the briefing from a
+structured JSON block plus two rendered chart images (`1D` and `15M`, SMC
+overlays + squeeze sub-panels). It must quote numbers verbatim or flag a
+data problem; it ends with a `GO | WAIT | AVOID` verdict + confidence. The
+briefing is written in **Hebrew** (tickers, numbers and technical terms stay
+in English); the verdict line itself stays `GO | WAIT | AVOID - confidence X/5`.
+
+Requirements:
+
+- **LM Studio** listening at `LLM_BASE_URL` (default `http://127.0.0.1:1234/v1`)
+  with the model from `LLM_MODEL` loaded (`analystbot` strips reasoning tags
+  if the model thinks out loud).
+- A bot invite with **View Channels, Send Messages, Manage Channels, Manage
+  Roles** (needed to lock the room by denying @everyone Send Messages) and
+  **Manage Messages** (pin the menu). The token comes from
+  `DISCORD_BOT_TOKEN` or falls back to `DISCORD_TOKEN`.
+- Optional env: `DISCORD_GUILD_ID` is auto-detected from the first guild the
+  bot is in; channel name override via `DISCORD_ANALYST_CHANNEL`. Also
+  `ANALYST_RISK_USD` (default dollar risk for the step-5 plan, 250),
+  `ANALYST_VISION` (chart images to the model, `1`) and `MACRO_TTL_MIN`
+  (macro-context cache lifetime, 10).
+
+Behavior details: a 20 s per-user cooldown (`ANALYST_COOLDOWN_S`) stops
+spam, only one analysis per symbol runs at a time, and replies are chunked
+to fit Discord's 2000-char message limit; the chart PNGs are attached to the
+first message (`ANALYST_VISION=0` keeps them off, and the model falls back
+to text-only automatically if the server rejects images). If the model is
+down, the room posts the error instead of staying silent. The menu re-syncs
+from the watchlist every `ANALYST_MENU_REFRESH_MIN` minutes (default 10) —
+save a watchlist in the UI and the picker follows. Logs: `logs/analystbot.log`.
+
+## 5. Signal bot (optional)
 
 Watches your watchlists from the **Signals** tab and sends pattern alerts
 (text + PNG chart). Config lives in `output/signal_config.json` and is re-read
@@ -161,6 +273,15 @@ More detail: `RUN.md` and `HANDSOFF.md`.
 | `QUANTITY` | `10` | Shares per trade |
 | `CAPITAL` | `100000` | Starting cash in the backtest |
 | `POLL_INTERVAL_MIN` | `5` | Live-loop check interval (minutes) |
+| `STOP_ATR_MULT` / `TARGET_R` | `2.0` / `2.0` | Bracket stop = entry − 2 × ATR(14); target = entry + 2R |
+| `RISK_MAX_LOSS_PER_TRADE_USD` | `200` | Loss at the stop allowed per entry |
+| `RISK_MAX_DAILY_LOSS_USD` | `500` | Sum of the max losses of today's entries |
+| `RISK_MAX_TRADES_PER_DAY` | `3` | Entries per NY day |
+| `RISK_MIN_REWARD_RISK` | `1.5` | Minimum (target − entry) / (entry − stop) |
+| `RISK_MAX_POSITION_PCT` / `RISK_CASH_BUFFER_PCT` | `25` / `10` | Position cap and free cash, % of equity |
+| `RISK_NO_ENTRIES_BEFORE` / `_AFTER` | `09:45` / `15:30` | NY entry window (`None` turns it off) |
+
+Any `RISK_*` limit set to `None` is switched off.
 
 ## Extending
 
@@ -169,5 +290,6 @@ More detail: `RUN.md` and `HANDSOFF.md`.
 - **ML advisor**: `strategy.py` can call Qwen via LM Studio's local API
   (`http://127.0.0.1:1234/v1/chat/completions`) if you want model-assisted
   signals later.
-- **Risk controls**: add stop-loss / position limits in `livebot.py` before
-  ever considering real money.
+- **Risk controls**: the live bot already uses bracket stops and the
+  `risk.py` gate; tighten the `RISK_*` limits in `config.py`, and keep the
+  backtest (`engine.py`) in step if you change the exit rule.
