@@ -61,6 +61,42 @@ def max_loss(qty: float, entry: float, stop: float | None) -> float | None:
     return round(qty * (entry - stop), 2)
 
 
+def size_position(
+    *,
+    entry: float,
+    stop: float,
+    max_loss_usd: float | None,
+    equity: float | None = None,
+    cash: float | None = None,
+    max_position_pct: float | None = None,
+    cash_buffer_pct: float | None = None,
+    max_shares: int | None = None,
+) -> tuple[int, str]:
+    """Whole long shares that fit every limit, and which limit decided it.
+
+    Limits: max loss at the stop, position cap (% of equity), cash left after
+    the buffer, and an absolute share cap. A limit that is None/0 is skipped.
+    0 shares with limited_by 'stop' means the stop is not below the entry.
+    """
+    risk_per_share = entry - stop
+    if entry <= 0 or risk_per_share <= 0:
+        return 0, "stop"
+    caps: list[tuple[str, float]] = []
+    if _on(max_loss_usd):
+        caps.append(("max_loss", max_loss_usd / risk_per_share))
+    if equity and _on(max_position_pct):
+        caps.append(("position_cap", equity * max_position_pct / 100.0 / entry))
+    if cash is not None and equity:
+        free = cash - equity * (cash_buffer_pct or 0.0) / 100.0
+        caps.append(("cash", max(free, 0.0) / entry))
+    if _on(max_shares):
+        caps.append(("max_shares", float(max_shares)))
+    if not caps:
+        return 0, "no_limits"
+    label, shares = min(caps, key=lambda c: c[1])
+    return max(int(shares + 1e-9), 0), label
+
+
 def check_entry(
     *,
     symbol: str,

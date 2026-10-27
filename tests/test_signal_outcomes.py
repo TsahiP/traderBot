@@ -111,3 +111,42 @@ def test_read_signals_hides_filtered_and_stats_split_them(monkeypatch, tmp_path)
     assert stats["filtered"]["total"] == 1
     assert stats["filtered"]["pending"] == 1
     assert stats["sent"]["losses"] == 1
+
+
+def test_resolved_alert_queues_one_followup(monkeypatch, tmp_path):
+    path = tmp_path / "signal_log.json"
+    monkeypatch.setattr(config, "SIGNAL_LOG_PATH", path)
+    sent = _entry(key="default|SPY|1d|2026-01-01 00:00|bullish_engulfing",
+                  label="Bullish Engulfing", entry=100.0)
+    blocked = _entry(key="default|SPY|1d|2026-01-01 00:00|morning_star", filtered=True)
+    legacy = _entry(key="default|QQQ|1d|2026-01-01 00:00|bullish_engulfing", outcome="win")
+    path.write_text(json.dumps([sent, blocked, legacy]), encoding="utf-8")
+
+    signal_outcomes.update_pending({("SPY", "1d"): _bars([(111, 99)])})
+    pending = signal_outcomes.pending_notifications()
+    assert [p["key"] for p in pending] == [sent["key"]]          # not filtered, not legacy
+    msg = signal_outcomes.outcome_message(pending[0])
+    assert "Target hit $110.00" in msg and "+2.0R" in msg
+
+    signal_outcomes.mark_notified({sent["key"]})
+    assert signal_outcomes.pending_notifications() == []
+
+
+def test_signalbot_sends_followup_to_watchlist_channels(monkeypatch, tmp_path):
+    import signalbot
+
+    path = tmp_path / "signal_log.json"
+    monkeypatch.setattr(config, "SIGNAL_LOG_PATH", path)
+    row = _entry(key="default|SPY|1d|2026-01-01 00:00|bullish_engulfing", label="Bullish Engulfing",
+                 entry=100.0, outcome="loss", outcome_notified=False)
+    path.write_text(json.dumps([row]), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(signalbot, "_try_deliver_alert",
+                        lambda wl, tf, key, msg, photo, *a: calls.append((wl["id"], tf, key, msg)) or True)
+    cfg = {"lists": [{"id": "default", "telegram_timeframes": ["1d"], "discord_timeframes": []}]}
+
+    assert signalbot.send_outcome_followups(cfg, "tok", ["1"]) == 1
+    (wl_id, tf, key, msg), = calls
+    assert wl_id == "default" and tf == "1d" and key.endswith("|outcome")
+    assert "Stop hit $95.00" in msg
+    assert signal_outcomes.pending_notifications() == []

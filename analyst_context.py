@@ -19,6 +19,7 @@ import news_client
 import signals
 import market_data
 import market_context
+import market_levels
 from confirmations import volume_ratio
 from llm_client import llm_chat_ex, resolve_llm_model, vision_user_message
 from smc import snapshot_smc
@@ -43,9 +44,9 @@ HARD RULES:
 ## Step 5 — Execution plan
 ## Verdict
 6. WRITE FOR A HUMAN, not a JSON dump. Never paste raw key:value lists and never use JSON key names (change_pct, five_bar_pct, price_zone, ...). Each step is 2-5 Hebrew full sentences that INTERPRET what the data means for a trader, followed by one short takeaway bullet starting with "סיכום: ". Guidance per step:
-   - Step 1: who the company is, valuation vs growth story, price behavior today, and what the news headlines push (positive/negative/neutral).
-   - Step 2: one line on QQQ regime, then VIX, oil and the geopolitical headlines -> state your risk-on/risk-off call and what it means for new entries.
-   - Step 3: the structure story: trend bias (BOS/CHoCH), where price sits vs the demand/supply blocks and the nearest wall, and whether open FVGs / equal highs-lows create magnets or risk. Cover 1D first, then 15M.
+   - Step 1: who the company is, valuation vs growth story (use last_quarters *_yoy_pct = change vs the same quarter a year earlier, and the margins), price behavior today, and what the news headlines push (positive/negative/neutral). An 8-K item tag (earnings, leadership, restatement, ...) in the news is a hard catalyst - name it.
+   - Step 2: one line on QQQ regime, then VIX, oil and the geopolitical headlines -> state your risk-on/risk-off call and what it means for new entries. Then say whether the stock leads or lags SPY (relative_strength_vs_spy: excess return per period, leading_periods).
+   - Step 3: the structure story: trend bias (BOS/CHoCH), where price sits vs the demand/supply blocks and the nearest wall, and whether open FVGs / equal highs-lows create magnets or risk. Cover 1D first, then 15M. Add where price sits vs the 60-day volume profile (point of control, value area low/high): inside value = balance, above/below = acceptance or rejection.
    - Step 4: squeeze state and momentum color on each timeframe, what that implies (compression/expansion), and whether the two timeframes agree.
    - Step 5: weave the plan into Hebrew sentences: entry, stop and why that level (stop basis), TP1/TP2 with their R:R and share split, combined R:R, position size and actual dollar risk from the given shares. Mention the flags (tp1_rr_below_1 etc.) and what they warn about.
 7. The Verdict section has exactly two lines. First line: choose exactly ONE verdict by copying one of these patterns - "GO - confidence X/5" or "WAIT - confidence X/5" or "AVOID - confidence X/5" (long-only; never write the whole menu). Then one short Hebrew reason line on the second line.
@@ -61,6 +62,8 @@ TF_SPECS = {
 
 ATR_PERIOD = 14
 VOL_ABSORB_MULT = 1.5
+RS_BENCHMARK = "SPY"
+VP_BARS = 60               # daily bars in the step-3 volume profile
 
 
 def gather_symbol_data(
@@ -100,6 +103,7 @@ def gather_symbol_data(
             "title": (it.get("title") or "")[:140],
             "summary": (it.get("summary") or "")[:200] or None,
             "sentiment": it.get("sentiment"),
+            **({"tags": it["tags"]} if it.get("tags") else {}),
         }
         for it in raw_news[: config.ANALYST_NEWS_MAX]
     ]
@@ -128,7 +132,9 @@ def gather_symbol_data(
     ]
 
     quarters = [
-        {k: q.get(k) for k in ("end", "revenue", "net_income", "gross_profit", "eps", "src")}
+        {k: q.get(k) for k in ("end", "revenue", "net_income", "gross_profit", "eps", "src",
+                               "revenue_yoy_pct", "net_income_yoy_pct", "eps_yoy_pct",
+                               "gross_margin_pct", "net_margin_pct") if q.get(k) is not None}
         for q in (snapshot.get("quarters") or [])[-4:]
     ]
 
@@ -155,8 +161,18 @@ def gather_symbol_data(
     data["price_action"] = _safe_step("price_action", lambda: _price_action_daily(daily_df), fetch_errors)
     data["ex_dividend"] = _safe_step("ex_dividend", lambda: _ex_dividend_date(symbol), fetch_errors)
 
-    # ---- step 2: macro (TTL-cached inside market_context)
+    # ---- step 2: macro (TTL-cached inside market_context) + relative strength vs SPY
     data["macro"] = _safe_step("macro", market_context.market_context, fetch_errors)
+    if daily_df is not None and symbol != RS_BENCHMARK:
+        bench_df = _fetch_bars(RS_BENCHMARK, "1d", fetch_errors)
+        if bench_df is not None:
+            data["relative_strength"] = _safe_step(
+                "relative_strength", lambda: market_levels.relative_strength(daily_df, bench_df), fetch_errors)
+
+    # ---- step 3 extra: volume profile of the last VP_BARS daily bars
+    if daily_df is not None and len(daily_df) >= 20:
+        data["volume_profile_daily"] = _safe_step(
+            "volume_profile", lambda: market_levels.volume_profile(daily_df.tail(VP_BARS)), fetch_errors)
 
     # ---- step 3: SMC snapshots per timeframe
     for tf, df in (("daily", daily_df), ("15m", intraday_df)):
@@ -198,6 +214,7 @@ def gather_symbol_data(
                 risk or 0.0,
                 holding={"qty": hl.get("qty"), "avg_price": hl.get("avg_price")}
                 if hl.get("qty") and hl.get("avg_price") else None,
+                account={"equity": config.ANALYST_ACCOUNT_USD} if config.ANALYST_ACCOUNT_USD > 0 else None,
             ),
             fetch_errors,
         )
@@ -331,10 +348,14 @@ def build_context_json(data: dict) -> str:
             "news": data.get("news", []),
             "snapshot_errors": data.get("snapshot_errors", []),
         },
-        "step2_macro": data.get("macro"),
+        "step2_macro": {
+            **(data.get("macro") or {}),
+            "relative_strength_vs_spy": data.get("relative_strength"),
+        } if data.get("macro") or data.get("relative_strength") else None,
         "step3_smc": {
             "daily": data.get("smc_daily"),
             "15m": data.get("smc_15m"),
+            "volume_profile_60d": data.get("volume_profile_daily"),
         },
         "step4_squeeze": {
             "daily": data.get("squeeze_daily"),

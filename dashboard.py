@@ -6,6 +6,7 @@ The Next.js frontend (web/) proxies /api/* to this server (port 8000).
 """
 import json
 import os
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -26,7 +27,7 @@ from bybit_client import BybitError
 from candle_patterns import PATTERNS as SIGNAL_PATTERNS
 from livebot import get_last_completed_bars
 from llm_client import llm_chat, resolve_llm_model
-from market_data import fetch_ohlcv, fetch_yfinance_history
+from market_data import fetch_ohlcv, fetch_ohlcv_period, fetch_yfinance_history
 from market_symbols import is_bybit_crypto, is_valid_symbol, normalize_symbol
 from strategy import compute_signals, latest_signal
 
@@ -118,7 +119,7 @@ def live_snapshot() -> dict:
         data = StockHistoricalDataClient(key, secret)
 
         clock = trading.get_clock()
-        bars = get_last_completed_bars(data)
+        bars = get_last_completed_bars(data, datetime.now(NY))
         df = compute_signals(bars, config.SMA_FAST, config.SMA_SLOW)
         signal = latest_signal(df)
 
@@ -156,6 +157,14 @@ def live_snapshot() -> dict:
         return {"connected": False, "reason": f"Alpaca error: {exc}"}
 
 
+def _opt_round(value, digits: int) -> float | None:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(f, digits) if np.isfinite(f) else None
+
+
 def build_run_payload(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: float) -> dict:
     """Downsample the curve for the browser and extract buy/sell markers."""
     n = len(curve)
@@ -185,6 +194,15 @@ def build_run_payload(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: flo
             "eod": True,
             "price": round(float(curve.at[orig, "Close"]), 2),
         })
+    if "bracket_exit" in curve.columns:
+        for orig in curve.index[curve["bracket_exit"] != ""].tolist():
+            markers.append({
+                "index": pos_of(curve.index.get_loc(orig)),
+                "date": ts(orig),
+                "side": str(curve.at[orig, "bracket_exit"]),
+                "exit": str(curve.at[orig, "bracket_kind"]),
+                "price": round(float(curve.at[orig, "bracket_price"]), 2),
+            })
 
     has_sma = "sma_fast" in curve.columns
     return {
@@ -225,6 +243,7 @@ def build_run_payload(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: flo
                 "exit_type": r["exit_type"],
                 "pnl": round(float(r["pnl"]), 2),
                 "costs": round(float(r["costs"]), 2),
+                "r_multiple": _opt_round(r.get("r_multiple"), 2),
             }
             for _, r in trades_df.iterrows()
         ],
@@ -345,6 +364,8 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         else:
             allow_short = (allow_short_raw or "false").lower() in ("1", "true", "yes")
         cost_per_share = float(raw.get("cost_per_share") or 0.0)
+        stop_atr = float(raw.get("stop_atr") or 0.0)
+        target_r = float(raw.get("target_r") or 0.0)
     except ValueError:
         return None, 400, "Invalid parameter values"
 
@@ -359,6 +380,8 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         return None, 400, "qty must be 1-100000 and capital > 0"
     if cost_per_share < 0 or cost_per_share > 1:
         return None, 400, "cost_per_share must be $0-$1"
+    if not (0 <= stop_atr <= 10 and 0 <= target_r <= 10):
+        return None, 400, "stop_atr and target_r must be 0-10 (0 = off)"
     try:
         params = strategies.parse_params(spec, raw)
     except ValueError as exc:
@@ -417,6 +440,8 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         allow_short=allow_short,
         cost_per_share=cost_per_share,
         flat_eod=flat_eod,
+        stop_atr_mult=stop_atr,
+        target_r=target_r,
     )
     payload = build_run_payload(curve, trades_df, capital)
     payload["meta"] = {
@@ -429,6 +454,8 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         "allow_short": allow_short,
         "cost_per_share": cost_per_share,
         "flat_eod": flat_eod,
+        "stop_atr": stop_atr,
+        "target_r": target_r,
         "params": {k: v for k, v in params.items()},
     }
     return payload, 200, None
@@ -440,6 +467,34 @@ def api_backtest_run():
     if error:
         return jsonify({"error": error}), status
     return jsonify(payload)
+
+
+@app.route("/api/timemachine")
+def api_timemachine():
+    """Monte Carlo replay of the rest of a session from 60d of 5m bars (stocks)."""
+    import timemachine
+
+    try:
+        symbol = normalize_symbol(request.args.get("symbol") or "")
+        entry = float(request.args["entry"])
+        stop = float(request.args["stop"])
+        target = float(request.args["target"])
+        side = (request.args.get("side") or "long").lower()
+        runs = min(max(int(request.args.get("runs", timemachine.DEFAULT_RUNS)), 100), 20_000)
+        seed = int(request.args.get("seed", timemachine.DEFAULT_SEED))
+        at_raw = request.args.get("at")
+        at = (datetime.strptime(at_raw, "%Y-%m-%d %H:%M").replace(tzinfo=NY)
+              if at_raw else datetime.now(NY))
+    except (KeyError, ValueError):
+        return jsonify({"error": "need symbol, entry, stop, target (numbers); optional side, runs, seed, at='YYYY-MM-DD HH:MM' NY"}), 400
+    if not is_valid_symbol(symbol) or is_bybit_crypto(symbol):
+        return jsonify({"error": "stock tickers only (the replay uses NYSE sessions)"}), 400
+    try:
+        df5 = fetch_ohlcv_period(symbol, "5m", "60d")
+        return jsonify(timemachine.replay(df5, entry=entry, stop=stop, target=target, at=at,
+                                          side=side, runs=runs, seed=seed))
+    except timemachine.TimeMachineError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 # ---- Local LLM advisor (LM Studio, OpenAI-compatible API) ----
@@ -477,6 +532,8 @@ def build_analysis_context(payload: dict, spec: dict) -> str:
                 "capital": meta["capital"],
                 "cost_per_share": meta["cost_per_share"],
                 "flat_eod": meta["flat_eod"],
+                "stop_atr_mult": meta.get("stop_atr", 0.0),
+                "target_r": meta.get("target_r", 0.0),
             },
             "results_decimal_fractions": {
                 "start": metrics["start"],
@@ -490,6 +547,10 @@ def build_analysis_context(payload: dict, spec: dict) -> str:
                 "wins": metrics["wins"],
                 "win_rate": metrics["win_rate"],
                 "costs_total": metrics["costs_total"],
+                "sharpe": metrics.get("sharpe"),
+                "profit_factor": metrics.get("profit_factor"),
+                "expectancy_usd": metrics.get("expectancy"),
+                "avg_r": metrics.get("avg_r"),
             },
             "trade_stats": {
                 "avg_win": avg([t["pnl"] for t in wins]),
@@ -499,6 +560,8 @@ def build_analysis_context(payload: dict, spec: dict) -> str:
                 "long_pnl": round(sum(t["pnl"] for t in long_trades), 2),
                 "short_pnl": round(sum(t["pnl"] for t in short_trades), 2),
                 "eod_exits": sum(1 for t in closed if t["exit_type"] == "eod"),
+                "stop_exits": sum(1 for t in closed if t["exit_type"] == "stop"),
+                "target_exits": sum(1 for t in closed if t["exit_type"] == "target"),
                 "open_positions": len(trades) - len(closed),
             },
             "allowed_param_ranges": [
@@ -845,6 +908,54 @@ def fundabot_watch_items(cfg: dict) -> tuple[list[str], list[str]]:
             elif symbol and symbol not in stocks:
                 stocks.append(symbol)
     return stocks, cryptos
+
+
+# ---- Market scanner (scanner.py) ----
+
+_scan_state: dict = {"running": False, "error": None, "started": None}
+_scan_lock = threading.Lock()
+
+
+def _scan_worker(mode: str, scope: str) -> None:
+    import scanner
+
+    try:
+        scanner.run_scan(mode, scope=scope)
+        _scan_state["error"] = None
+    except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
+        _scan_state["error"] = str(exc)[:200]
+    finally:
+        _scan_state["running"] = False
+
+
+@app.route("/api/scanner")
+def api_scanner():
+    import scanner
+
+    return jsonify({
+        "results": scanner.read_results(),
+        "running": _scan_state["running"],
+        "started": _scan_state["started"],
+        "error": _scan_state["error"],
+    })
+
+
+@app.route("/api/scanner/run", methods=["POST"])
+def api_scanner_run():
+    body, err = _json_object_body()
+    if err:
+        return err
+    mode = str(body.get("mode", "daily"))
+    scope = str(body.get("scope", "watchlists"))
+    if mode not in ("daily", "orb") or scope not in ("watchlists", "universe"):
+        return jsonify({"error": "mode must be daily|orb and scope watchlists|universe"}), 400
+    with _scan_lock:
+        if _scan_state["running"]:
+            return jsonify({"error": "a scan is already running"}), 409
+        _scan_state.update(running=True, error=None,
+                           started=datetime.now(NY).isoformat(timespec="seconds"))
+    threading.Thread(target=_scan_worker, args=(mode, scope), daemon=True).start()
+    return jsonify({"started": True, "mode": mode, "scope": scope}), 202
 
 
 if __name__ == "__main__":

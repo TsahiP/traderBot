@@ -10,10 +10,53 @@ Simulation model:
   - cost_per_share is charged on every fill (commission + slippage)
   - flat_eod: any open position is force-closed at the last bar of its
     session (day-trading strategies never hold overnight)
+  - optional bracket exits (stop_atr_mult / target_r), the same rule the
+    live bot sends to Alpaca: stop = entry -/+ mult x ATR of the bar before
+    the entry, target = entry +/- target_r x that risk. Checked inside every
+    bar from the entry bar on; a gap through a level fills at the open, and
+    a bar that touches both counts as the stop (conservative)
 """
+import math
+
 import pandas as pd
 
 from strategies import run_strategy
+
+ATR_PERIOD = 14
+
+
+def atr_series(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
+    """Simple-average true range (same as livebot.atr / analyst_context._atr)."""
+    prev_close = df["Close"].shift(1)
+    tr = pd.concat(
+        [df["High"] - df["Low"], (df["High"] - prev_close).abs(), (df["Low"] - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    return tr.rolling(period).mean()
+
+
+def bracket_hit(side: str, bar, stop: float | None, target: float | None) -> tuple[float, str] | None:
+    """(fill price, 'stop' | 'target') if this bar takes the trade out."""
+    o, h, l = float(bar["Open"]), float(bar["High"]), float(bar["Low"])
+    if side == "long":
+        if stop is not None and o <= stop:
+            return o, "stop"
+        if target is not None and o >= target:
+            return o, "target"
+        if stop is not None and l <= stop:
+            return stop, "stop"
+        if target is not None and h >= target:
+            return target, "target"
+    else:
+        if stop is not None and o >= stop:
+            return o, "stop"
+        if target is not None and o <= target:
+            return o, "target"
+        if stop is not None and h >= stop:
+            return stop, "stop"
+        if target is not None and l <= target:
+            return target, "target"
+    return None
 
 
 def run_backtest(
@@ -26,17 +69,24 @@ def run_backtest(
     allow_short: bool = False,
     cost_per_share: float = 0.0,
     flat_eod: bool = False,
+    stop_atr_mult: float = 0.0,
+    target_r: float = 0.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Simulate fixed-quantity trading on the given bars.
 
     Returns (curve, trades_df). The curve carries Open/High/Low/Close/
     Volume plus signal, order (signal shifted by one bar), shares, cash,
     equity, and eod_exit (side of any forced session-end close).
+    stop_atr_mult / target_r = 0 switch the bracket legs off.
     """
     df = run_strategy(strategy, df, dict(params or {}))
     df["order"] = df["signal"].shift(1).fillna(0).astype(int)
     df["eod_exit"] = ""
     df["exec"] = ""
+    df["bracket_exit"] = ""
+    df["bracket_kind"] = ""
+    df["bracket_price"] = math.nan
+    prev_atr = atr_series(df).shift(1) if stop_atr_mult > 0 else None
 
     last_of_session = (
         set(df.groupby(df.index.date).tail(1).index) if flat_eod else set()
@@ -44,94 +94,106 @@ def run_backtest(
 
     cash = float(capital)
     shares = 0
-    entry_price = None
-    entry_date = None
-    entry_side = None
+    pos: dict = {}
     trades = []
+
+    def close(idx, price: float, exit_type: str) -> None:
+        nonlocal cash, shares, pos
+        cost = cost_per_share * qty
+        if shares > 0:
+            cash += (price - cost) * shares
+            pnl = (price - pos["price"]) * shares - 2 * cost * qty
+        else:
+            cash -= (price + cost) * -shares
+            pnl = (pos["price"] - price) * -shares - 2 * cost * qty
+        risk = pos.get("risk")
+        per_share = (price - pos["price"]) if shares > 0 else (pos["price"] - price)
+        trades.append(
+            {
+                "entry_date": pos["date"],
+                "entry_price": pos["price"],
+                "exit_date": idx,
+                "exit_price": price,
+                "side": pos["side"],
+                "exit_type": exit_type,
+                "pnl": pnl,
+                "costs": 2 * cost * qty,
+                "stop": pos.get("stop"),
+                "target": pos.get("target"),
+                "r_multiple": per_share / risk if risk else None,
+            }
+        )
+        shares = 0
+        pos = {}
+
+    def open_(idx, side: str) -> None:
+        nonlocal cash, shares, pos
+        price = float(df.at[idx, "Open"])
+        cost = cost_per_share * qty
+        if side == "long":
+            shares = qty
+            cash -= (price + cost) * qty
+        else:
+            shares = -qty
+            cash += (price - cost) * qty
+        pos = {"price": price, "date": idx, "side": side, "stop": None, "target": None, "risk": None}
+        atr = float(prev_atr.at[idx]) if prev_atr is not None else math.nan
+        if stop_atr_mult > 0 and math.isfinite(atr) and atr > 0:
+            risk = stop_atr_mult * atr
+            sign = 1 if side == "long" else -1
+            pos["risk"] = risk
+            pos["stop"] = price - sign * risk
+            if target_r > 0:
+                pos["target"] = price + sign * target_r * risk
+        df.at[idx, "exec"] = "buy" if side == "long" else "sell"
 
     for idx, row in df.iterrows():
         cost = cost_per_share * qty
 
         if shares == 0:
             if row["order"] == 1 and cash >= (row["Open"] + cost) * qty:
-                shares = qty
-                cash -= (row["Open"] + cost) * qty
-                entry_price, entry_date, entry_side = row["Open"], idx, "long"
-                df.at[idx, "exec"] = "buy"
+                open_(idx, "long")
             elif row["order"] == -1 and allow_short and cash >= (row["Open"] + cost) * qty:
-                shares = -qty
-                cash += (row["Open"] - cost) * qty
-                entry_price, entry_date, entry_side = row["Open"], idx, "short"
-                df.at[idx, "exec"] = "sell"
+                open_(idx, "short")
         elif (row["order"] == -1 and shares > 0) or (row["order"] == 1 and shares < 0):
-            if shares > 0:
-                cash += (row["Open"] - cost) * shares
-                pnl = (row["Open"] - entry_price) * shares - 2 * cost * qty
-                df.at[idx, "exec"] = "sell"
-            else:
-                cash -= (row["Open"] + cost) * -shares
-                pnl = (entry_price - row["Open"]) * -shares - 2 * cost * qty
-                df.at[idx, "exec"] = "buy"
-            trades.append(
-                {
-                    "entry_date": entry_date,
-                    "entry_price": entry_price,
-                    "exit_date": idx,
-                    "exit_price": row["Open"],
-                    "side": entry_side,
-                    "exit_type": "signal",
-                    "pnl": pnl,
-                    "costs": 2 * cost * qty,
-                }
-            )
-            shares = 0
-            entry_price = entry_date = entry_side = None
+            df.at[idx, "exec"] = "sell" if shares > 0 else "buy"
+            close(idx, float(row["Open"]), "signal")
+
+        if shares != 0 and (pos.get("stop") is not None or pos.get("target") is not None):
+            hit = bracket_hit(pos["side"], row, pos.get("stop"), pos.get("target"))
+            if hit:
+                df.at[idx, "bracket_exit"] = "sell" if shares > 0 else "buy"
+                df.at[idx, "bracket_kind"] = hit[1]
+                df.at[idx, "bracket_price"] = hit[0]
+                close(idx, hit[0], hit[1])
 
         if shares != 0 and idx in last_of_session:
-            cost = cost_per_share * qty
-            if shares > 0:
-                cash += (row["Close"] - cost) * shares
-                pnl = (row["Close"] - entry_price) * shares - 2 * cost * qty
-                df.at[idx, "eod_exit"] = "sell"
-            else:
-                cash -= (row["Close"] + cost) * -shares
-                pnl = (entry_price - row["Close"]) * -shares - 2 * cost * qty
-                df.at[idx, "eod_exit"] = "buy"
-            trades.append(
-                {
-                    "entry_date": entry_date,
-                    "entry_price": entry_price,
-                    "exit_date": idx,
-                    "exit_price": row["Close"],
-                    "side": entry_side,
-                    "exit_type": "eod",
-                    "pnl": pnl,
-                    "costs": 2 * cost * qty,
-                }
-            )
-            shares = 0
-            entry_price = entry_date = entry_side = None
+            df.at[idx, "eod_exit"] = "sell" if shares > 0 else "buy"
+            close(idx, float(row["Close"]), "eod")
 
         df.at[idx, "shares"] = shares
         df.at[idx, "cash"] = cash
         df.at[idx, "equity"] = cash + shares * row["Close"]
 
-    if shares != 0 and entry_price is not None:
+    if shares != 0 and pos:
         last_close = float(df["Close"].iloc[-1])
         if shares > 0:
-            unrealized = (last_close - entry_price) * shares - cost_per_share * qty
+            unrealized = (last_close - pos["price"]) * shares - cost_per_share * qty
         else:
-            unrealized = (entry_price - last_close) * -shares - cost_per_share * qty
+            unrealized = (pos["price"] - last_close) * -shares - cost_per_share * qty
         trades.append(
             {
-                "entry_date": entry_date,
-                "entry_price": entry_price,
+                "entry_date": pos["date"],
+                "entry_price": pos["price"],
                 "exit_date": None,
                 "exit_price": None,
-                "side": entry_side,
+                "side": pos["side"],
                 "exit_type": "open",
                 "pnl": unrealized,
                 "costs": cost_per_share * qty,
+                "stop": pos.get("stop"),
+                "target": pos.get("target"),
+                "r_multiple": None,
             }
         )
 
@@ -139,6 +201,7 @@ def run_backtest(
     cols = [
         "Open", "High", "Low", "Close", "Volume",
         "signal", "order", "eod_exit", "exec", "shares", "cash", "equity",
+        "bracket_exit", "bracket_kind", "bracket_price",
     ]
     cols += [c for c in ("sma_fast", "sma_slow") if c in df.columns]
     curve = df[cols].copy()
@@ -175,4 +238,42 @@ def compute_metrics(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: float
         "wins": wins,
         "win_rate": wins / n_trades if n_trades else None,
         "costs_total": round(costs, 2),
+        **trade_quality(trades_df),
+        "sharpe": sharpe_ratio(equity),
     }
+
+
+def _finite(x) -> float | None:
+    return round(float(x), 4) if x is not None and math.isfinite(float(x)) else None
+
+
+def trade_quality(trades_df: pd.DataFrame) -> dict:
+    """Closed-trade stats: profit factor, expectancy ($/trade), avg win/loss, avg R."""
+    out = {"profit_factor": None, "expectancy": None, "avg_win": None,
+           "avg_loss": None, "avg_r": None}
+    if trades_df is None or trades_df.empty or "exit_type" not in trades_df.columns:
+        return out
+    closed = trades_df[trades_df["exit_type"] != "open"]
+    if closed.empty:
+        return out
+    pnl = closed["pnl"].astype(float)
+    gross_win = float(pnl[pnl > 0].sum())
+    gross_loss = float(-pnl[pnl <= 0].sum())
+    out["profit_factor"] = _finite(gross_win / gross_loss) if gross_loss > 0 else None
+    out["expectancy"] = _finite(pnl.mean())
+    out["avg_win"] = _finite(pnl[pnl > 0].mean()) if (pnl > 0).any() else None
+    out["avg_loss"] = _finite(pnl[pnl <= 0].mean()) if (pnl <= 0).any() else None
+    if "r_multiple" in closed.columns:
+        r = pd.to_numeric(closed["r_multiple"], errors="coerce").dropna()
+        out["avg_r"] = _finite(r.mean()) if len(r) else None
+    return out
+
+
+def sharpe_ratio(equity: pd.Series) -> float | None:
+    """Annualized Sharpe of daily equity returns (intraday curves resample to
+    the session close first), risk-free rate 0."""
+    daily = equity.groupby(equity.index.date).last() if len(equity) else equity
+    rets = daily.pct_change().dropna()
+    if len(rets) < 2 or float(rets.std()) == 0.0:
+        return None
+    return _finite(rets.mean() / rets.std() * math.sqrt(252))

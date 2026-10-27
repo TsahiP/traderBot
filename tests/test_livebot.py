@@ -161,7 +161,8 @@ def test_positions_api_error_aborts_cycle_without_ordering(env):
     assert trading.submitted == []
 
 
-def test_risk_block_places_nothing(env):
+def test_risk_block_places_nothing(env, monkeypatch):
+    monkeypatch.setattr(config, "RISK_SIZE_BY_RISK", False)   # fixed qty -> the gate must block
     trading = FakeTrading()
     trading.equity = "3000"                      # position cap + cash buffer fail
     state = livebot.load_state()
@@ -194,3 +195,29 @@ def test_market_closed_does_nothing(env):
     trading.is_open = False
     assert livebot.run_cycle(trading, None, livebot.load_state(), NOW) == "closed"
     assert trading.submitted == []
+
+
+def test_early_close_shortens_entry_window():
+    assert livebot.risk_limits(datetime(2026, 11, 27, 11, 0, tzinfo=NY)).no_entries_after == "12:30"
+    assert livebot.risk_limits(NOW).no_entries_after == config.RISK_NO_ENTRIES_AFTER
+
+
+def test_size_by_risk_buys_fewer_shares(env, monkeypatch):
+    monkeypatch.setattr(config, "RISK_MAX_LOSS_PER_TRADE_USD", 20.0)
+    monkeypatch.setattr(config, "RISK_SIZE_BY_RISK", True)
+    trading = FakeTrading()
+    state = livebot.load_state()
+    assert livebot.run_cycle(trading, None, state, NOW) == "entered"
+    req = trading.submitted[0]
+    risk_ps = 120.0 - req.stop_loss.stop_price
+    assert 0 < float(req.qty) < config.QUANTITY
+    assert float(req.qty) * risk_ps <= 20.0 + 1e-6
+    assert state["open_trade"]["qty"] == float(req.qty)
+
+
+def test_size_zero_blocks_with_reason(env, monkeypatch):
+    monkeypatch.setattr(config, "RISK_MAX_LOSS_PER_TRADE_USD", 0.5)
+    trading = FakeTrading()
+    state = livebot.load_state()
+    assert livebot.run_cycle(trading, None, state, NOW) == "blocked"
+    assert state["last_block"].startswith("BLOCK: size: 0 shares fit (limited by max_loss)")

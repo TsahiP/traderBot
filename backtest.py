@@ -42,6 +42,8 @@ def main() -> None:
         params={"fast": config.SMA_FAST, "slow": config.SMA_SLOW},
         qty=config.QUANTITY,
         capital=config.CAPITAL,
+        stop_atr_mult=config.STOP_ATR_MULT,  # same bracket the live bot sends
+        target_r=config.TARGET_R,
     )
 
     trades.to_csv(config.OUTPUT_DIR / "trades.csv", index=False)
@@ -51,7 +53,8 @@ def main() -> None:
     )
 
     m = compute_metrics(curve, trades, config.CAPITAL)
-    print(f"\n=== Backtest: {symbol} | SMA {config.SMA_FAST}/{config.SMA_SLOW} | qty {config.QUANTITY} ===")
+    print(f"\n=== Backtest: {symbol} | SMA {config.SMA_FAST}/{config.SMA_SLOW} | qty {config.QUANTITY}"
+          f" | stop {config.STOP_ATR_MULT}x ATR, target {config.TARGET_R}R ===")
     print(f"  Period            : {m['start']} -> {m['end']}")
     print(f"  Starting capital  : ${config.CAPITAL:,.0f}")
     print(f"  Final equity      : ${m['final_equity']:,.2f}")
@@ -62,6 +65,9 @@ def main() -> None:
         print(f"  Trades            : {m['trades']}  (wins: {m['wins']}, win rate: {m['wins'] / m['trades']:.1%})")
     else:
         print("  Trades            : 0")
+    fmt = lambda v, f: format(v, f) if v is not None else "-"
+    print(f"  Profit factor     : {fmt(m['profit_factor'], '.2f')}   Expectancy: ${fmt(m['expectancy'], ',.2f')}/trade")
+    print(f"  Avg R             : {fmt(m['avg_r'], '.2f')}   Sharpe: {fmt(m['sharpe'], '.2f')}")
     print(f"  Outputs           : {config.OUTPUT_DIR / 'trades.csv'}")
     print(f"                      {config.OUTPUT_DIR / 'equity_curve.csv'}")
     print(f"                      {config.OUTPUT_DIR / f'data_{symbol}.csv'}")

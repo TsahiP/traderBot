@@ -1,11 +1,12 @@
 "use client";
 
-import { FlaskConical, LayoutDashboard, Newspaper, Radar } from "lucide-react";
+import { FlaskConical, LayoutDashboard, Newspaper, Radar, ScanSearch } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { SignalsPanel } from "@/components/signals/signals-panel";
 import { FundiPanel } from "@/components/fundi/fundi-panel";
+import { ScannerPanel } from "@/components/scanner/scanner-panel";
 import { TickerTape } from "@/components/ticker-tape";
 import { StatCards } from "@/components/stat-cards";
 import { EquityChart } from "@/components/charts/equity-chart";
@@ -46,6 +47,10 @@ export default function Home() {
             <TabsTrigger value="fundi" className="gap-1.5">
               <Newspaper data-icon="inline-start" />
               Fundi
+            </TabsTrigger>
+            <TabsTrigger value="scanner" className="gap-1.5">
+              <ScanSearch data-icon="inline-start" />
+              Scanner
             </TabsTrigger>
           </TabsList>
 
@@ -131,7 +136,8 @@ export default function Home() {
                         </CardTitle>
                         <CardDescription>
                           ▲ buy fill · ▼ sell fill · amber = forced session-end
-                          close — orders execute at the next bar&apos;s open;
+                          close (EOD) or bracket exit (STOP / TP) — orders execute at
+                          the next bar&apos;s open;
                           every marker has a row in Trade results below
                         </CardDescription>
                       </CardHeader>
@@ -158,6 +164,10 @@ export default function Home() {
 
           <TabsContent value="fundi" className="flex flex-col gap-4">
             <FundiPanel />
+          </TabsContent>
+
+          <TabsContent value="scanner" className="flex flex-col gap-4">
+            <ScannerPanel />
           </TabsContent>
         </Tabs>
       </main>

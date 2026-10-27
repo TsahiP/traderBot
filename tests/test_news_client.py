@@ -75,6 +75,7 @@ def test_poll_symbol_no_providers_configured_electronless(monkeypatch):
     """No keys at all -> google rss fallback fetches nothing, cache stays empty."""
     monkeypatch.setattr(nc, "_get_json", lambda *a, **k: (None, "offline"))
     monkeypatch.setattr(nc, "_get_text", lambda *a, **k: (None, "offline"))
+    monkeypatch.setattr(nc, "_sec_8k_items", lambda s: [])  # CIK lookup lives in funda_client
     all_items, new_items = nc.poll_symbol("AAPL")
     assert all_items == new_items == []
     assert nc.read_symbol_news("AAPL") == []
@@ -93,6 +94,7 @@ def test_poll_symbol_new_items_detection(monkeypatch):
 
     monkeypatch.setattr(nc, "_get_text", rss_only_get_text)
     monkeypatch.setattr(nc, "_get_json", json_offline)
+    monkeypatch.setattr(nc, "_sec_8k_items", lambda s: [])
     _, first_new = nc.poll_symbol("AAPL")
     assert len(first_new) == 2
     second_all, second_new = nc.poll_symbol("AAPL")
@@ -134,3 +136,22 @@ def test_read_all_news_merged(monkeypatch, tmp_path):
         ), encoding="utf-8")
     rows = nc.read_all_news(limit=10)
     assert rows[0]["symbol"] == "AAPL"  # newest first
+
+
+def test_sec_8k_items_tagged_and_recent_only():
+    now = datetime(2026, 10, 27, 12, 0, tzinfo=nc.NY)
+    data = {"filings": {"recent": {
+        "form": ["8-K", "10-Q", "8-K", "8-K"],
+        "acceptanceDateTime": ["2026-10-23T20:05:32.000Z", "2026-10-24T20:00:00.000Z",
+                               "2026-10-01T12:00:00.000Z", "2026-08-01T12:00:00.000Z"],
+        "accessionNumber": ["0000320193-26-000010", "x", "0000320193-26-000009", "old"],
+        "primaryDocument": ["aapl-8k.htm", "q.htm", "lead.htm", "old.htm"],
+        "items": ["2.02,9.01", "", "5.02", "2.02"],
+    }}}
+    items = nc.sec_8k_items_from_submissions("AAPL", 320193, data, now=now)
+    assert [it["tags"] for it in items] == [["earnings"], ["leadership"]]
+    first = items[0]
+    assert first["title"] == "8-K: Results of operations"
+    assert first["url"] == "https://www.sec.gov/Archives/edgar/data/320193/000032019326000010/aapl-8k.htm"
+    assert "#earnings" in nc.push_text(first)
+    assert nc.tag_8k_items("1.01,2.01,9.01") == (["deal"], ["Material agreement", "Acquisition or disposition completed"])

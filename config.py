@@ -16,7 +16,7 @@ except ImportError:
 SYMBOL = "SPY"
 SMA_FAST = 10
 SMA_SLOW = 50
-QUANTITY = 10            # shares bought/sold per trade
+QUANTITY = 10            # shares per trade (live bot: the cap when RISK_SIZE_BY_RISK is on)
 CAPITAL = 100_000.0      # starting cash used by the backtest
 
 # ---- Backtest ----
@@ -42,6 +42,9 @@ RISK_MAX_POSITION_PCT = 25.0          # of account equity
 RISK_CASH_BUFFER_PCT = 10.0           # cash that must stay free after a buy
 RISK_NO_ENTRIES_BEFORE = "09:45"      # NY time; skips the opening auction swings
 RISK_NO_ENTRIES_AFTER = "15:30"
+# Size each entry to fit the limits above (max loss, position cap, cash buffer),
+# capped at QUANTITY. False = always QUANTITY shares, and the gate blocks if too big.
+RISK_SIZE_BY_RISK = True
 
 # ---- Local LLM advisor (LM Studio) ----
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
@@ -56,6 +59,7 @@ ANALYST_NEWS_MAX = int(os.getenv("ANALYST_NEWS_MAX", "6"))        # news items f
 ANALYST_SIGNALS_MAX = int(os.getenv("ANALYST_SIGNALS_MAX", "8"))  # recent bot signals fed to the model
 ANALYST_LLM_TIMEOUT = int(os.getenv("ANALYST_LLM_TIMEOUT", "600"))
 ANALYST_RISK_USD = float(os.getenv("ANALYST_RISK_USD", "250"))   # step-5 default $ risk per trade
+ANALYST_ACCOUNT_USD = float(os.getenv("ANALYST_ACCOUNT_USD", "0"))  # >0 caps step-5 size (25% position, cash)
 ANALYST_VISION = os.getenv("ANALYST_VISION", "1").strip() not in ("0", "false", "False", "off")
 MACRO_TTL_MIN = float(os.getenv("MACRO_TTL_MIN", "10"))         # step-2 macro context cache
 
@@ -65,6 +69,10 @@ SIGNAL_LOG_PATH = OUTPUT_DIR / "signal_log.json"
 SIGNAL_HEARTBEAT_PATH = OUTPUT_DIR / "signal_heartbeat.json"
 DISCORD_WEBHOOKS_PATH = OUTPUT_DIR / "discord_webhooks.json"
 SIGNAL_MAX_LOG = 1000          # sent alerts kept in the log (also dedupe source)
+# Time Machine line on intraday stock alerts (timemachine.py): replays of the rest of
+# the session from 60 days of 5m bars. 0 turns it off.
+TIMEMACHINE_ALERT_RUNS = int(os.getenv("TIMEMACHINE_ALERT_RUNS", "2000"))
+TIMEMACHINE_ALERT_TFS = ("5m", "15m", "30m", "1h")
 
 # ---- Fundamentals & news (fundabot / dashboard tab) ----
 FUNDA_DIR = OUTPUT_DIR / "funda"           # per-symbol snapshot JSONs

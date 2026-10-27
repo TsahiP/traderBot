@@ -1,10 +1,13 @@
 """Resolve logged signal alerts against later bars: target first, stop first, or expiry.
 
 Uses bars the scheduler already fetched. A symbol that leaves every watchlist
-stops updating until it is scanned again.
+stops updating until it is scanned again. A delivered alert that resolves to
+win/loss gets `outcome_notified: false`; signalbot then posts a one-line
+follow-up ("target hit" / "stop hit") to the same channels and flips it true.
 """
 import pandas as pd
 
+import config
 import signals
 
 OUTCOME_BARS = 100
@@ -81,5 +84,45 @@ def update_pending(bars_cache: dict[tuple[str, str], pd.DataFrame]) -> None:
             outcome = resolve_outcome(df, entry)
             if outcome:
                 entry["outcome"] = outcome
+                if outcome in NOTIFY_OUTCOMES and not entry.get("filtered"):
+                    entry["outcome_notified"] = False  # signalbot sends the follow-up
 
     signals.rewrite_signals(apply)
+
+
+NOTIFY_OUTCOMES = ("win", "loss")
+
+
+def pending_notifications() -> list[dict]:
+    """Delivered alerts that just hit target/stop and still need a follow-up.
+    Rows resolved before this feature have no `outcome_notified` and stay quiet."""
+    return [e for e in signals.read_signals(limit=config.SIGNAL_MAX_LOG, include_filtered=False)
+            if e.get("outcome_notified") is False]
+
+
+def mark_notified(keys: set[str]) -> None:
+    if not keys:
+        return
+
+    def apply(entries: list) -> None:
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("key") in keys:
+                entry["outcome_notified"] = True
+
+    signals.rewrite_signals(apply)
+
+
+def outcome_message(entry: dict) -> str:
+    """'TSLA · 15m — Bullish Engulfing (LONG): 🎯 target hit $251.20 (+2R)'."""
+    side = "LONG" if entry.get("direction") == "long" else "SHORT"
+    head = f"{entry.get('symbol')} · {entry.get('timeframe')} — {entry.get('label')} ({side})"
+    entry_px = float(entry.get("entry") or entry.get("close") or 0.0)
+    stop = float(entry.get("stop") or 0.0)
+    target = entry.get("target")
+    risk = abs(entry_px - stop)
+    if entry.get("outcome") == "win" and target is not None:
+        r = abs(float(target) - entry_px) / risk if risk else None
+        body = f"🎯 Target hit ${float(target):.2f}" + (f" (+{r:.1f}R)" if r else "")
+    else:
+        body = f"🛑 Stop hit ${stop:.2f} (-1R)"
+    return f"{head}\n{body}\nAlert bar: {entry.get('bar_ts')} · entry ~${entry_px:.2f}"

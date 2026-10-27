@@ -15,8 +15,10 @@ import pandas as pd
 from dotenv import load_dotenv
 
 import config
+import market_calendar
 import signal_outcomes
 import signals
+import timemachine
 from candle_patterns import PATTERNS, detect_all
 from chart_image import render_candles
 from confirmations import below_min, evaluate, failed_required, format_lines
@@ -207,6 +209,7 @@ def _log_signal(
     *,
     confluence: dict | None,
     filtered: bool,
+    timemachine: dict | None = None,
 ) -> None:
     entry = {
         "key": key,
@@ -226,7 +229,41 @@ def _log_signal(
     }
     if confluence is not None:
         entry["confluence"] = confluence
+    if timemachine:
+        entry["timemachine"] = {k: timemachine[k] for k in
+                                ("runs", "sessions", "p_target", "p_stop", "p_neither", "avg_r", "verdict")}
     signals.append_signal(entry)
+
+
+def time_machine_for_alert(
+    symbol: str,
+    timeframe: str,
+    df: pd.DataFrame,
+    pattern_id: str,
+    levels: dict,
+    bars_cache: dict,
+) -> dict | None:
+    """Replay the rest of today's session for an intraday stock alert (None when
+    off, crypto, daily+, no target, or not enough 5m history)."""
+    if (config.TIMEMACHINE_ALERT_RUNS <= 0 or timeframe not in config.TIMEMACHINE_ALERT_TFS
+            or is_bybit_crypto(normalize_symbol(symbol)) or levels.get("target") is None):
+        return None
+    pair = (symbol, "5m:60d")
+    if pair not in bars_cache:
+        try:
+            bars_cache[pair] = fetch_ohlcv_period(symbol, "5m", "60d")
+        except Exception as exc:
+            logger.warning("time machine bars %s failed: %s", symbol, exc)
+            bars_cache[pair] = pd.DataFrame()
+    at = (df.index[-1] + timedelta(minutes=_TF_MINUTES[timeframe])).to_pydatetime()
+    try:
+        return timemachine.replay(
+            bars_cache[pair], entry=levels["entry"], stop=levels["stop"], target=levels["target"],
+            at=at, side=PATTERNS[pattern_id]["direction"], runs=config.TIMEMACHINE_ALERT_RUNS,
+        )
+    except timemachine.TimeMachineError as exc:
+        logger.info("time machine skipped for %s %s: %s", symbol, timeframe, exc)
+        return None
 
 
 def _watchlist_by_id(cfg: dict, list_id: str) -> dict | None:
@@ -311,8 +348,12 @@ def _run_scan_job(
                 )
                 continue
 
+        tm = time_machine_for_alert(symbol, timeframe, df, pattern_id, levels, bars_cache)
+        extra_lines = list(confluence_lines or [])
+        if tm:
+            extra_lines.append(timemachine.format_line(tm))
         message = build_message(
-            symbol, timeframe, pattern_id, bar_ts, levels, confluence_lines,
+            symbol, timeframe, pattern_id, bar_ts, levels, extra_lines or None,
         )
         try:
             smc = (analysis.get("smc") or {}) if analysis.get("enabled") else {}
@@ -337,10 +378,34 @@ def _run_scan_job(
 
         _log_signal(
             key, list_name, symbol, timeframe, pattern_id, bar_ts, levels,
-            confluence=confluence, filtered=False,
+            confluence=confluence, filtered=False, timemachine=tm,
         )
         sent.add(key)
         logger.info("SIGNAL %s (list: %s)", key, list_name)
+
+
+def _list_id_from_key(key: str) -> str | None:
+    parts = str(key).split("|")
+    return parts[0] if len(parts) == 5 else None  # legacy keys have no list id
+
+
+def send_outcome_followups(cfg: dict, token: str | None, chat_ids: list[str]) -> int:
+    """Post 'target hit' / 'stop hit' for alerts resolved this wake, on the
+    same channels as the alert. Failed sends retry on the next wake."""
+    done: set[str] = set()
+    for entry in signal_outcomes.pending_notifications():
+        key = entry.get("key", "")
+        watchlist = _watchlist_by_id(cfg, _list_id_from_key(key) or "")
+        if watchlist is None:  # list deleted: nothing to route to, stop retrying
+            done.add(key)
+            continue
+        message = signal_outcomes.outcome_message(entry)
+        if _try_deliver_alert(watchlist, entry.get("timeframe", ""), key + "|outcome",
+                              message, None, token, chat_ids, entry.get("symbol", "")):
+            done.add(key)
+            logger.info("OUTCOME %s %s", entry.get("outcome"), key)
+    signal_outcomes.mark_notified(done)
+    return len(done)
 
 
 def main() -> None:
@@ -365,10 +430,17 @@ def main() -> None:
         due: list[tuple[str, str, str, str]] = []
         for list_id, list_name, symbol, timeframe in jobs:
             job_key = (list_id, symbol, timeframe)
-            if job_key not in schedule:
+            first_run = job_key not in schedule
+            if first_run:
                 schedule[job_key] = now
-            if now >= schedule[job_key]:
-                due.append((list_id, list_name, symbol, timeframe))
+            if now < schedule[job_key]:
+                continue
+            if not first_run and not is_bybit_crypto(normalize_symbol(symbol)) and not \
+                    market_calendar.stock_bar_due(timeframe, now, _TF_MINUTES.get(timeframe)):
+                # NYSE closed for this bar (weekend, holiday, overnight): skip the fetch
+                schedule[job_key] = signals.next_run_after_timeframe(timeframe, now)
+                continue
+            due.append((list_id, list_name, symbol, timeframe))
 
         bars_cache: dict[tuple[str, str], pd.DataFrame] = {}
         for list_id, list_name, symbol, timeframe in due:
@@ -378,6 +450,10 @@ def main() -> None:
             schedule[(list_id, symbol, timeframe)] = signals.next_run_after_timeframe(timeframe, now)
 
         signal_outcomes.update_pending(bars_cache)
+        try:
+            send_outcome_followups(cfg, token, chat_ids)
+        except Exception as exc:
+            logger.warning("outcome follow-ups failed: %s", exc)
 
         elapsed = time.time() - wake_start
         tg_ok = bool(token and chat_ids)

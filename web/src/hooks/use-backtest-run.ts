@@ -17,6 +17,8 @@ export interface RunParams {
   capital: number;
   allow_short: boolean;
   cost_per_share: number;
+  stop_atr: number;
+  target_r: number;
   params: Record<string, number>;
 }
 
@@ -29,6 +31,8 @@ function toKey(p: RunParams): string {
     capital: String(p.capital),
     allow_short: String(p.allow_short),
     cost_per_share: String(p.cost_per_share),
+    stop_atr: String(p.stop_atr),
+    target_r: String(p.target_r),
   });
   if (p.start) qs.set("start", p.start);
   if (p.end) qs.set("end", p.end);
@@ -58,6 +62,8 @@ export function useBacktestRun() {
       capital,
       allow_short,
       cost_per_share,
+      stop_atr,
+      target_r,
     } = values;
     const EXCLUDED = [
       "symbol",
@@ -69,6 +75,8 @@ export function useBacktestRun() {
       "capital",
       "allow_short",
       "cost_per_share",
+      "stop_atr",
+      "target_r",
     ];
     const params: Record<string, number> = {};
     for (const [k, v] of Object.entries(values)) {
@@ -84,6 +92,8 @@ export function useBacktestRun() {
       capital,
       allow_short,
       cost_per_share,
+      stop_atr,
+      target_r,
       params,
     });
   }, []);

@@ -5,7 +5,9 @@ Canonical item: {id, ts, symbol, title, summary, url, source, sentiment}
   sentiment = nullable float (-1..1) when the provider scores it (Alpha Vantage).
 
 Providers (best -> worst, all free tiers):
-  finnhub       FINNHUB_API_KEY       company-news (60/min, effectively unlimited)
+  sec_8k        no key                the company's 8-K filings (last 30 days), tagged by item
+                                      (earnings, leadership, deal, restatement, bankruptcy, ...)
+  finnhub      FINNHUB_API_KEY       company-news (60/min, effectively unlimited)
   alpaca        ALPACA_API_KEY/SECRET existing keys; v1beta1 news (needs entitlement)
   google_rss    no key                per-symbol keyword search fallback
   crypto_rss    no key                CoinDesk/Cointelegraph/Decrypt filtered per coin
@@ -43,14 +45,14 @@ def _item_id(url: str) -> str:
 
 
 def _clean_item(symbol: str, *, title, url, ts, summary=None, source=None,
-                sentiment=None) -> dict | None:
+                sentiment=None, tags=None) -> dict | None:
     title = (title or "").strip()
     url = (url or "").strip()
     if not title or not url or not ts:
         return None
     if not str(url).startswith("http"):
         return None
-    return {
+    item = {
         "id": _item_id(url),
         "symbol": symbol,
         "ts": ts.isoformat("T", timespec="seconds"),
@@ -60,6 +62,94 @@ def _clean_item(symbol: str, *, title, url, ts, summary=None, source=None,
         "source": (source or "").strip()[:40] or None,
         "sentiment": _num(sentiment),
     }
+    if tags:
+        item["tags"] = list(tags)
+    return item
+
+
+# ------------------------------------------------------------------ sec 8-K filings
+
+SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+SEC_8K_DAYS = 30
+# 8-K item -> (tag, short label). 9.01 (exhibits) rides along with most filings and is skipped.
+EIGHT_K_ITEMS = {
+    "1.01": ("deal", "Material agreement"),
+    "1.02": ("deal", "Agreement terminated"),
+    "1.03": ("bankruptcy", "Bankruptcy or receivership"),
+    "1.05": ("cyber", "Cybersecurity incident"),
+    "2.01": ("deal", "Acquisition or disposition completed"),
+    "2.02": ("earnings", "Results of operations"),
+    "2.03": ("financing", "New debt obligation"),
+    "2.04": ("financing", "Debt acceleration trigger"),
+    "2.05": ("restructuring", "Exit or restructuring costs"),
+    "2.06": ("impairment", "Material impairment"),
+    "3.01": ("delisting", "Delisting or listing-rule notice"),
+    "3.02": ("dilution", "Unregistered equity sale"),
+    "3.03": ("shareholder_rights", "Change to shareholder rights"),
+    "4.01": ("auditor", "Auditor change"),
+    "4.02": ("restatement", "Prior financials no longer reliable"),
+    "5.01": ("control_change", "Change in control"),
+    "5.02": ("leadership", "Officer or director change"),
+    "5.03": ("governance", "Charter or bylaws amended"),
+    "5.07": ("vote", "Shareholder vote results"),
+    "7.01": ("reg_fd", "Reg FD disclosure"),
+    "8.01": ("other", "Other material event"),
+}
+
+
+def tag_8k_items(items: str) -> tuple[list[str], list[str]]:
+    """'2.02,9.01' -> (['earnings'], ['Results of operations'])."""
+    tags, labels = [], []
+    for code in str(items or "").replace(" ", "").split(","):
+        if code in EIGHT_K_ITEMS:
+            tag, label = EIGHT_K_ITEMS[code]
+            if tag not in tags:
+                tags.append(tag)
+            labels.append(label)
+    return tags, labels
+
+
+def sec_8k_items_from_submissions(symbol: str, cik: int, data: dict, now: datetime | None = None) -> list[dict]:
+    """News items for the 8-K filings of the last SEC_8K_DAYS in a submissions payload."""
+    recent = ((data or {}).get("filings") or {}).get("recent") or {}
+    forms = recent.get("form") or []
+    cutoff = (now or datetime.now(NY)) - timedelta(days=SEC_8K_DAYS)
+    out: list[dict] = []
+    for i, form in enumerate(forms):
+        if form not in ("8-K", "8-K/A"):
+            continue
+        try:
+            accepted = datetime.fromisoformat(str(recent["acceptanceDateTime"][i]).replace("Z", "+00:00"))
+            accession = str(recent["accessionNumber"][i])
+            doc = str(recent["primaryDocument"][i])
+            items = str((recent.get("items") or [""] * len(forms))[i])
+        except (KeyError, IndexError, ValueError):
+            continue
+        if accepted < cutoff:
+            continue
+        tags, labels = tag_8k_items(items)
+        if not labels:
+            continue
+        url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}/{doc}"
+        it = _clean_item(
+            symbol, title=f"{form}: {'; '.join(labels)}", url=url, ts=accepted.astimezone(NY),
+            summary=f"Items {items}", source="SEC EDGAR", tags=tags,
+        )
+        if it:
+            out.append(it)
+    return out
+
+
+def _sec_8k_items(symbol: str) -> list[dict]:
+    from funda_client import _edgar_cik
+
+    cik = _edgar_cik(symbol)
+    if not cik:
+        return []
+    data, err = _get_json(SEC_SUBMISSIONS_URL.format(cik=cik), per_minute=None)
+    if err or not isinstance(data, dict):
+        return []
+    return sec_8k_items_from_submissions(symbol, cik, data)
 
 
 # ------------------------------------------------------------------ finnhub
@@ -336,7 +426,8 @@ def poll_symbol(symbol: str, company: str | None = None) -> tuple[list[dict], li
         for it in _crypto_news_items(symbol, _ALIAS_RUN_CACHE):
             got.setdefault(it["id"], it)
     else:
-        for fetch in (_finnhub_items, _alpaca_items, lambda s: _google_news_items(s, company)):
+        for fetch in (_sec_8k_items, _finnhub_items, _alpaca_items,
+                      lambda s: _google_news_items(s, company)):
             for it in fetch(symbol):
                 got.setdefault(it["id"], it)
 
@@ -393,6 +484,8 @@ def push_text(item: dict) -> str:
     if item.get("summary"):
         lines.append(item["summary"][:180])
     meta = []
+    if item.get("tags"):
+        meta.append(" ".join(f"#{t}" for t in item["tags"]))
     if item.get("source"):
         meta.append(item["source"])
     if isinstance(item.get("sentiment"), (int, float)):

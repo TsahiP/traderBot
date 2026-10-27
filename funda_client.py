@@ -347,6 +347,34 @@ def _same_quarter_prior(rows: list[dict], target: dict) -> dict | None:
     return None
 
 
+def _ttm_sum(rows: list[dict]) -> float | None:
+    """Sum of the last 4 quarters, only when they are 4 consecutive quarters.
+
+    Q4 often exists only inside the 10-K annual figure, so the last 4 quarterly
+    rows can skip a quarter; then the SEC TTM is left to the next provider.
+    """
+    if len(rows) < 4:
+        return None
+    try:
+        ends = [datetime.fromisoformat(str(r["end"])) for r in rows[-4:]]
+    except ValueError:
+        return None
+    gaps = [(b - a).days for a, b in zip(ends, ends[1:])]
+    if not all(75 <= g <= 105 for g in gaps):
+        return None
+    return sum(float(r["val"]) for r in rows[-4:])
+
+
+def _yoy_pct(now, prior) -> float | None:
+    try:
+        now, prior = float(now), float(prior)
+    except (TypeError, ValueError):
+        return None
+    if prior == 0:
+        return None
+    return round((now - prior) / abs(prior) * 100.0, 2)
+
+
 def _edgar_fill(snap: dict, symbol: str) -> bool:
     """Authoritative statements + derived fields from SEC XBRL company facts."""
     cik = _edgar_cik(symbol)
@@ -409,11 +437,8 @@ def _edgar_fill(snap: dict, symbol: str) -> bool:
     if val(current_assets) and val(current_liab):
         _set_field(snap, "current_ratio", val(current_assets) / val(current_liab), "sec_edgar")
 
-    last_4: dict[str, list] = {}
     for tag, rows in (("revenue_ttm", rev_rows), ("net_income_ttm", ni_rows), ("eps_ttm", eps_rows)):
-        if len(rows) >= 2:
-            last_4[tag] = [float(r["val"]) for r in rows[-4:]]
-            _set_field(snap, tag, sum(last_4[tag]) / len(last_4[tag]), "sec_edgar")
+        _set_field(snap, tag, _ttm_sum(rows), "sec_edgar")  # None -> the next provider fills it
     if len(ocf_rows) >= 1:
         ocf = sum(float(r['val']) for r in ocf_rows[-4:]) if len(ocf_rows) >= 4 else float(ocf_rows[-1]['val'])
         capex = 0.0
@@ -425,17 +450,26 @@ def _edgar_fill(snap: dict, symbol: str) -> bool:
             )
         _set_field(snap, "fcf_ttm", ocf + capex if capex <= 0 else ocf - capex, "sec_edgar")
 
-    # Quarters table (last 5, aligned by end date across tags)
+    # Quarters table (last 5, aligned by end date across tags), each with its
+    # change vs the same quarter a year earlier and its margins
     ends = [r["end"] for r in rev_rows or ni_rows] if (rev_rows or ni_rows) else []
     quarters = []
+    series = (("revenue", rev_rows), ("net_income", ni_rows), ("gross_profit", gp_rows), ("eps", eps_rows))
     for end in ends[-5:]:
         q = {"end": end, "src": "sec_edgar"}
-        for name, rows in (("revenue", rev_rows), ("net_income", ni_rows),
-                           ("gross_profit", gp_rows), ("eps", eps_rows)):
-            for row in rows:
-                if row["end"] == end:
-                    q[name] = row["val"]
-                    break
+        for name, rows in series:
+            row = next((r for r in rows if r["end"] == end), None)
+            if row is None:
+                continue
+            q[name] = row["val"]
+            if name != "gross_profit":
+                prior = _same_quarter_prior([r for r in rows if r["end"] < end], row)
+                q[f"{name}_yoy_pct"] = _yoy_pct(row["val"], prior["val"] if prior else None)
+        if q.get("revenue"):
+            if q.get("gross_profit") is not None:
+                q["gross_margin_pct"] = round(float(q["gross_profit"]) / float(q["revenue"]) * 100, 2)
+            if q.get("net_income") is not None:
+                q["net_margin_pct"] = round(float(q["net_income"]) / float(q["revenue"]) * 100, 2)
         if quarters and quarters[-1]["end"] == end:
             continue
         quarters.append(q)

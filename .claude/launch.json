@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tradebot-api",
+      "runtimeExecutable": "D:\\Tp\\tradebot\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["dashboard.py"],
+      "cwd": "D:\\Tp\\tradebot",
+      "port": 8000
+    },
+    {
+      "name": "tradebot-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "-p", "3001"],
+      "cwd": "D:\\Tp\\tradebot\\web",
+      "port": 3001
+    }
+  ]
+}

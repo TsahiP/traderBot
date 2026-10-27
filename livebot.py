@@ -22,6 +22,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 import config
+import market_calendar
 import risk
 
 load_dotenv(config.BASE_DIR / ".env")
@@ -313,11 +314,23 @@ def try_enter(trading, data, state: dict, df: pd.DataFrame, signal_bar: str, now
     ref = latest_price(data, last_close)
     stop, target = bracket_levels(ref, atr_value)
     account = trading.get_account()
+    equity, cash = float(account.equity), float(account.cash)
+    limits = risk_limits(now)
+    qty, limited_by = config.QUANTITY, "fixed"
+    if config.RISK_SIZE_BY_RISK:
+        qty, limited_by = risk.size_position(
+            entry=ref, stop=stop, max_loss_usd=limits.max_loss_per_trade_usd, equity=equity,
+            cash=cash, max_position_pct=limits.max_position_pct,
+            cash_buffer_pct=limits.cash_buffer_pct, max_shares=config.QUANTITY,
+        )
     verdict = risk.check_entry(
-        symbol=config.SYMBOL, qty=config.QUANTITY, entry=ref, stop=stop, target=target,
-        now_ny=now, equity=float(account.equity), cash=float(account.cash),
-        entries_today=entries_today(state, now), limits=risk_limits(),
+        symbol=config.SYMBOL, qty=qty, entry=ref, stop=stop, target=target,
+        now_ny=now, equity=equity, cash=cash,
+        entries_today=entries_today(state, now), limits=limits,
     )
+    if qty <= 0:
+        others = [r for r in verdict.reasons if not r.startswith("qty ")]
+        verdict = risk.Verdict(ok=False, reasons=[f"size: 0 shares fit (limited by {limited_by})"] + others)
     if not verdict.ok:
         summary = verdict.summary()
         if summary != state.get("last_block"):
@@ -325,24 +338,24 @@ def try_enter(trading, data, state: dict, df: pd.DataFrame, signal_bar: str, now
             state["last_block"] = summary
         return
 
-    order = place_bracket_buy(trading, config.QUANTITY, stop, target)
+    order = place_bracket_buy(trading, qty, stop, target)
     entry_price = wait_for_fill(trading, order.id, ref)
     state["open_trade"] = {
         "entry_date": now.isoformat(timespec="seconds"),
         "entry_price": entry_price,
-        "qty": config.QUANTITY,
+        "qty": qty,
         "stop": stop, "target": target,
         "order_id": str(order.id),
     }
     state["entries"].append({
         "date": now.date().isoformat(), "ts": now.isoformat(timespec="seconds"),
-        "symbol": config.SYMBOL, "max_loss": risk.max_loss(config.QUANTITY, ref, stop),
+        "symbol": config.SYMBOL, "max_loss": risk.max_loss(qty, ref, stop),
         "order_id": str(order.id),
     })
     state["acted_signal_bar"] = signal_bar
     state["last_block"] = None
-    logger.info("BUY signal (%s) - bought @ %.2f, stop %.2f, target %.2f, risk PASS",
-                signal_bar, entry_price, stop, target)
+    logger.info("BUY signal (%s) - bought %s @ %.2f (size limited by %s), stop %.2f, target %.2f, risk PASS",
+                signal_bar, qty, entry_price, limited_by, stop, target)
 
 
 def exit_position(trading, state: dict, position, last_close: float, now: datetime) -> None:
@@ -357,7 +370,16 @@ def exit_position(trading, state: dict, position, last_close: float, now: dateti
     logger.info("SELL signal - sold @ %.2f", exit_price)
 
 
-def risk_limits() -> risk.RiskLimits:
+def _shift_hhmm(value: str | None, hours: int) -> str | None:
+    if not value:
+        return value
+    h, m = (int(x) for x in value.split(":"))
+    return f"{h + hours:02d}:{m:02d}"
+
+
+def risk_limits(now: datetime | None = None) -> risk.RiskLimits:
+    """config RISK_* limits; on a 1:00 PM early close the window ends 3h sooner."""
+    early = bool(now) and now.date() in market_calendar.early_closes(now.year)
     return risk.RiskLimits(
         max_loss_per_trade_usd=config.RISK_MAX_LOSS_PER_TRADE_USD,
         max_daily_loss_usd=config.RISK_MAX_DAILY_LOSS_USD,
@@ -366,7 +388,8 @@ def risk_limits() -> risk.RiskLimits:
         max_position_pct=config.RISK_MAX_POSITION_PCT,
         cash_buffer_pct=config.RISK_CASH_BUFFER_PCT,
         no_entries_before=config.RISK_NO_ENTRIES_BEFORE,
-        no_entries_after=config.RISK_NO_ENTRIES_AFTER,
+        no_entries_after=_shift_hhmm(config.RISK_NO_ENTRIES_AFTER, -3) if early
+        else config.RISK_NO_ENTRIES_AFTER,
     )
 
 

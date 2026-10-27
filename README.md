@@ -53,6 +53,10 @@ max drawdown, trade count and win rate versus buy-and-hold. Set `SYMBOL` in
 spot daily bars instead — that path needs the Bybit keys above. Details are
 written to `output/trades.csv` and `output/equity_curve.csv`.
 
+The CLI applies the same bracket exits as the live bot (`STOP_ATR_MULT`,
+`TARGET_R`; a bar that touches both counts as the stop) and also prints
+profit factor, expectancy, average R and Sharpe.
+
 Note: commission/slippage are not modelled; intraday fills may differ
 slightly from the backtest.
 
@@ -110,7 +114,9 @@ truth. Main areas:
   SMA pair, quantity and capital. Renders candlesticks with SMA overlays,
   ▲ buy / ▼ sell markers where the logic fires, volume bars, metrics and the
   full trade list. Inputs are validated with zod; API responses are schema
-  checked on every fetch.
+  checked on every fetch. Optional **Stop (× ATR)** / **Target (R)** add the
+  live bot's bracket exits (STOP / TP markers); metrics include profit
+  factor, expectancy per trade, average R and Sharpe.
 - **Signals** — configure candlestick-pattern watchlists (symbols, patterns,
   separate **Telegram** and **Discord** timeframe sets per list). The signal bot
   scans each list on its own bar-close schedule and pushes alerts with a chart
@@ -264,6 +270,46 @@ for that timeframe succeed.
 
 More detail: `RUN.md` and `HANDSOFF.md`.
 
+## 6. Scanner, Time Machine and MCP server
+
+**Market scanner** (`scanner.py`, **Scanner** tab) finds setups across your
+watchlists or every US-listed common stock (Nasdaq Trader symbol directories,
+~5,500 names, a few minutes):
+
+```powershell
+python scanner.py daily --scope universe   # 20d breakout, bull flag, MA20 reclaim, oversold, bounce
+python scanner.py orb                      # opening-range breakouts on today's 5m bars
+```
+
+Results: `output/scan_results.json`, most traded first.
+
+**Time Machine** (`timemachine.py`) replays the rest of the session 10,000
+times from the stock's own 5-minute bars (60 days) and reports the odds of
+target first / stop first / neither, avg R, what really happened on past
+sessions, and a verdict against the break-even rate `1 / (1 + R)`. Intraday
+stock alerts get a one-line summary (`TIMEMACHINE_ALERT_RUNS`, 0 = off); the
+API is `GET /api/timemachine?symbol=TSLA&entry=..&stop=..&target=..`.
+
+**Alert follow-ups**: when a delivered alert hits its target or stop, the
+signal bot posts "🎯 Target hit" / "🛑 Stop hit" to the same channels.
+
+**MCP server** (`tradebot_mcp.py`) exposes the engine to Claude — read-only,
+it never places orders. Tools: `analyze_symbol`, `run_backtest`,
+`time_machine`, `scan_market`, `last_scan`, `fundamentals`, `news`,
+`signal_history`, `signal_stats`, `risk_check`, `levels` (RS vs SPY + volume
+profile), `market_status`.
+
+```bash
+claude mcp add tradebot -- D:\Tp\tradebot\.venv\Scripts\python.exe D:\Tp\tradebot\tradebot_mcp.py
+```
+
+Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{"mcpServers": {"tradebot": {"command": "D:\\Tp\\tradebot\\.venv\\Scripts\\python.exe",
+  "args": ["D:\\Tp\\tradebot\\tradebot_mcp.py"]}}}
+```
+
 ## Configuration (`config.py`)
 
 | Setting | Default | Meaning |
@@ -279,7 +325,8 @@ More detail: `RUN.md` and `HANDSOFF.md`.
 | `RISK_MAX_TRADES_PER_DAY` | `3` | Entries per NY day |
 | `RISK_MIN_REWARD_RISK` | `1.5` | Minimum (target − entry) / (entry − stop) |
 | `RISK_MAX_POSITION_PCT` / `RISK_CASH_BUFFER_PCT` | `25` / `10` | Position cap and free cash, % of equity |
-| `RISK_NO_ENTRIES_BEFORE` / `_AFTER` | `09:45` / `15:30` | NY entry window (`None` turns it off) |
+| `RISK_NO_ENTRIES_BEFORE` / `_AFTER` | `09:45` / `15:30` | NY entry window (`None` turns it off); ends 3h earlier on a 1:00 PM early close |
+| `RISK_SIZE_BY_RISK` | `True` | Size each entry to the tightest of max loss / position cap / cash buffer, capped at `QUANTITY` |
 
 Any `RISK_*` limit set to `None` is switched off.
 

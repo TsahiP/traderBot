@@ -119,8 +119,10 @@ def test_edgar_facts_parsing(monkeypatch):
     assert f["net_margin"]["v"] == pytest.approx(10.0)
     assert f["de_ratio"]["v"] == pytest.approx(round(200_000_000.0 / 300_000_000.0, 4))
     assert f["current_ratio"]["v"] == pytest.approx(2.0)
-    # TTM averages over last 4 quarter rows; fixture has 2 rows each
-    assert f["revenue_ttm"]["v"] == pytest.approx((120_000_000.0 + 100_000_000.0) / 2)
+    # TTM needs 4 consecutive quarters; the fixture has 2 rows, so SEC leaves it
+    # to the next provider instead of reporting a partial (or averaged) figure
+    assert "revenue_ttm" not in f
+    assert snap["quarters"][-1]["revenue_yoy_pct"] == pytest.approx(20.0)
     # FCF = op cash flow (+ capex which is stored negative on EDGAR)
     assert f["fcf_ttm"]["v"] == pytest.approx(44_000_000.0 + (-4_000_000.0))
     assert len(snap["quarters"]) == 2
@@ -181,3 +183,15 @@ def test_refresh_fallback_chain_fmp_then_skips(monkeypatch):
     assert f["div_yield"]["src"] == "fmp"  # 0.5 / 15.0 * 100
     assert snap["sources_used"] == ["fmp"]
     assert fdc.quota_status()["fmp"]["used"] >= 1
+
+
+def test_ttm_sum_needs_four_consecutive_quarters():
+    rows = [{"end": e, "val": v} for e, v in
+            (("2025-06-30", 10.0), ("2025-09-30", 11.0), ("2025-12-31", 12.0), ("2026-03-31", 13.0))]
+    assert fdc._ttm_sum(rows) == 46.0
+    gap = [rows[0], rows[1], rows[3], {"end": "2026-06-30", "val": 14.0}]   # Q4 only in the 10-K
+    assert fdc._ttm_sum(gap) is None
+    assert fdc._ttm_sum(rows[:3]) is None
+    assert fdc._yoy_pct(120.0, 100.0) == 20.0
+    assert fdc._yoy_pct(-50.0, -100.0) == 50.0
+    assert fdc._yoy_pct(1.0, 0.0) is None

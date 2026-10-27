@@ -89,3 +89,16 @@ def test_summary_lists_every_reason():
     v = _check(qty=50, target=101.0)
     assert v.summary().startswith("BLOCK: ")
     assert "loss:" in v.summary() and "reward_risk:" in v.summary()
+
+
+def test_size_position_picks_the_tightest_limit():
+    # max loss: 200 / 5 = 40 shares; position cap 25% of 10k = 2500 / 100 = 25 shares
+    assert risk.size_position(entry=100.0, stop=95.0, max_loss_usd=200.0, equity=10_000.0,
+                              cash=10_000.0, max_position_pct=25.0) == (25, "position_cap")
+    assert risk.size_position(entry=100.0, stop=95.0, max_loss_usd=200.0, equity=100_000.0,
+                              cash=100_000.0, max_position_pct=25.0) == (40, "max_loss")
+    # cash after a 10% buffer: 3000 - 1000 = 2000 -> 20 shares
+    assert risk.size_position(entry=100.0, stop=95.0, max_loss_usd=200.0, equity=10_000.0,
+                              cash=3_000.0, max_position_pct=50.0, cash_buffer_pct=10.0) == (20, "cash")
+    assert risk.size_position(entry=100.0, stop=95.0, max_loss_usd=200.0, max_shares=10) == (10, "max_shares")
+    assert risk.size_position(entry=100.0, stop=101.0, max_loss_usd=200.0) == (0, "stop")

@@ -95,3 +95,12 @@ def test_plan_holding_block():
         holding={"qty": 50, "avg_price": 96.0},
     )
     assert plan_zero["holding"]["stop_breakeven_or_better"] is True
+
+
+def test_position_size_with_account_caps():
+    s = tp.position_size(entry=100.0, stop=95.0, risk_usd=500.0,
+                         account={"equity": 20_000.0, "max_position_pct": 25.0})
+    assert s["shares"] == 50 and s["limited_by"] == "position_cap"   # 5000 / 100
+    assert s["risk_usd_actual"] == 250.0
+    plain = tp.position_size(entry=100.0, stop=95.0, risk_usd=120.0)
+    assert plain["limited_by"] == "max_loss"

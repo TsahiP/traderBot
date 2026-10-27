@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import math
 
+import risk
+
+DEFAULT_MAX_POSITION_PCT = 25.0  # position cap when an account size is given
 ATR_STOP_BUFFER = 0.25      # stop sits a quarter ATR under the level
 MAX_STOP_ATR_MULT = 4.0     # stop farther than this many ATRs -> quality flag
 ROUND_SHADE = 0.10          # < $200: park at X.90 just under the $X.00 level
@@ -35,23 +38,38 @@ def round_break(raw: float, price: float) -> float:
     return round(math.floor(raw) - shade, 2)
 
 
-def position_size(entry: float, stop: float, risk_usd: float) -> dict:
-    """fixed-fraction sizing: shares = floor(risk_usd / risk_per_share)."""
+def position_size(entry: float, stop: float, risk_usd: float, account: dict | None = None) -> dict:
+    """fixed-fraction sizing: shares = floor(risk_usd / risk_per_share).
+
+    With `account` ({equity, cash?, max_position_pct?, cash_buffer_pct?}) the
+    size is also capped by the position cap and free cash (risk.size_position),
+    and `limited_by` names the limit that decided it.
+    """
     risk_per_share = entry - stop
     if risk_per_share <= 0:
         return {"shares": 0, "risk_per_share": risk_per_share,
-                "risk_usd_actual": 0.0, "position_value": 0.0}
-    shares = int(risk_usd // risk_per_share)
+                "risk_usd_actual": 0.0, "position_value": 0.0, "limited_by": "stop"}
+    if account and account.get("equity"):
+        equity = float(account["equity"])
+        shares, limited_by = risk.size_position(
+            entry=entry, stop=stop, max_loss_usd=risk_usd, equity=equity,
+            cash=float(account.get("cash", equity)),
+            max_position_pct=account.get("max_position_pct", DEFAULT_MAX_POSITION_PCT),
+            cash_buffer_pct=account.get("cash_buffer_pct", 0.0),
+        )
+    else:
+        shares, limited_by = int(risk_usd // risk_per_share), "max_loss"
     return {
         "shares": shares,
         "risk_per_share": round(risk_per_share, 4),
         "risk_usd_actual": round(shares * risk_per_share, 2),
         "position_value": round(shares * entry, 2),
+        "limited_by": limited_by,
     }
 
 
 def build_trade_plan(price: float, smc: dict, atr: float, risk_usd: float,
-                     holding: dict | None = None) -> dict:
+                     holding: dict | None = None, account: dict | None = None) -> dict:
     """price + snapshot_smc(1D) + ATR -> the step-5 execution block."""
     price = float(price)
     smc = smc if isinstance(smc, dict) else {}
@@ -88,7 +106,9 @@ def build_trade_plan(price: float, smc: dict, atr: float, risk_usd: float,
         flags.append("stop_capped")
 
     stop_distance = price - stop
-    sizing = position_size(price, stop, risk_usd or 0.0)
+    sizing = position_size(price, stop, risk_usd or 0.0, account)
+    if sizing["limited_by"] not in ("max_loss", "stop"):
+        flags.append(f"size_capped_by_{sizing['limited_by']}")
 
     # ---- targets
     tp1 = tp2 = None
