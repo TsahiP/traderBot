@@ -42,11 +42,16 @@ NY = ZoneInfo("America/New_York")
 
 logger = logging.getLogger("analystbot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-_handler = RotatingFileHandler(
-    config.LOG_DIR / "analystbot.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
-)
-_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-logger.addHandler(_handler)
+
+
+def _log_to_file() -> None:
+    """Attach logs/analystbot.log - only from main(), so tests that import this
+    module never write their fake failures into the real log."""
+    handler = RotatingFileHandler(
+        config.LOG_DIR / "analystbot.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
 
 MENU_INTRO = (
     "**🔎 Fundi analyst room**\n"
@@ -362,6 +367,7 @@ class AnalystBot(commands.Bot):
 
 
 def main() -> None:
+    _log_to_file()
     token = bot_token()
 
     async def _runner() -> None:

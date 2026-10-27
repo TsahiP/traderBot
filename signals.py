@@ -5,6 +5,7 @@ import from here so they never disagree about where things live.
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -184,10 +185,21 @@ def default_config() -> dict:
     return {"lists": [_default_list()]}
 
 
+REPLACE_RETRIES = 10        # Windows: a reader (dashboard, Defender) can hold the file briefly
+REPLACE_RETRY_S = 0.2
+
+
 def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    for attempt in range(REPLACE_RETRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == REPLACE_RETRIES - 1:
+                raise
+            time.sleep(REPLACE_RETRY_S)
 
 
 def _clean_symbols(symbols) -> list[str]:

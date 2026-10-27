@@ -444,12 +444,18 @@ def main() -> None:
 
         bars_cache: dict[tuple[str, str], pd.DataFrame] = {}
         for list_id, list_name, symbol, timeframe in due:
-            _run_scan_job(
-                cfg, list_id, list_name, symbol, timeframe, sent, token, chat_ids, bars_cache
-            )
+            try:
+                _run_scan_job(
+                    cfg, list_id, list_name, symbol, timeframe, sent, token, chat_ids, bars_cache
+                )
+            except Exception:  # noqa: BLE001 - one job (or a locked log file) must not kill the bot
+                logger.exception("scan job %s %s [%s] failed", symbol, timeframe, list_name)
             schedule[(list_id, symbol, timeframe)] = signals.next_run_after_timeframe(timeframe, now)
 
-        signal_outcomes.update_pending(bars_cache)
+        try:
+            signal_outcomes.update_pending(bars_cache)
+        except Exception:  # noqa: BLE001
+            logger.exception("outcome update failed (retried next wake)")
         try:
             send_outcome_followups(cfg, token, chat_ids)
         except Exception as exc:

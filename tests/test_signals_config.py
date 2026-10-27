@@ -181,3 +181,24 @@ def test_default_config_covers_every_pattern():
     assert cfg["lists"][0]["patterns"] == list(PATTERNS.keys())
     assert cfg["lists"][0]["telegram_timeframes"] == ["1d"]
     assert cfg["lists"][0]["discord_timeframes"] == ["1d"]
+
+
+def test_atomic_write_retries_a_locked_file(tmp_path, monkeypatch):
+    import os as _os
+
+    import signals
+
+    target = tmp_path / "log.json"
+    real_replace = _os.replace
+    calls = {"n": 0}
+
+    def flaky(src, dst):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(5, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(signals.os, "replace", flaky)
+    monkeypatch.setattr(signals, "REPLACE_RETRY_S", 0.0)
+    signals._atomic_write(target, "[]")
+    assert target.read_text(encoding="utf-8") == "[]" and calls["n"] == 3

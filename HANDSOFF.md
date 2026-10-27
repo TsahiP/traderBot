@@ -483,3 +483,13 @@ shared run helper incl. failure path).
 - **Dev servers:** `.claude/launch.json` defines `tradebot-api` (:8000) and
   `tradebot-web` (`next dev -p 3001`, since :3000 may be taken by another
   project). Restart the API after Python changes — Flask runs without reload.
+- **signalbot survives a locked log file:** `signals._atomic_write` retries
+  `os.replace` on `PermissionError` (10 × 0.2 s — Windows readers/Defender
+  hold the file briefly; this crash stopped the bot on 2026-10-24). Each scan
+  job and `signal_outcomes.update_pending` run inside `try/except` +
+  `logger.exception`, so one failure never ends the loop.
+- **analystbot log file is attached in `main()`** (`_log_to_file()`), not at
+  import — the test suite used to write its fake "analysis failed" tracebacks
+  into the real `logs/analystbot.log`.
+- Session state (running PIDs, what was verified, open items):
+  [HANDOFF_2026-10-27.md](HANDOFF_2026-10-27.md).
