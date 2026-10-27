@@ -33,7 +33,7 @@ from zoneinfo import ZoneInfo
 import config
 import signals
 from analyst_context import format_reply, gather_symbol_data, run_analysis
-from market_symbols import is_bybit_crypto
+from market_symbols import is_bybit_crypto, is_valid_symbol
 
 import discord
 from discord.ext import commands
@@ -58,8 +58,10 @@ MENU_INTRO = (
     "Pick a ticker below — the bot pulls everything it has on that stock "
     "(fundamentals snapshot, recent news, signal history), runs the 5-step "
     "protocol through the local LLM (catalysts, macro, Smart Money, Squeeze "
-    "Momentum, execution plan) and posts the briefing with chart images. "
-    "Free typing is disabled in this room."
+    "Momentum, execution plan) and sends you the briefing with chart images "
+    "in a private message (posted here if your DMs are closed). "
+    "Optional in the popup: an amount to invest for a fixed-ratio plan "
+    "(stop derived automatically). Free typing is disabled in this room."
 )
 
 
@@ -74,20 +76,28 @@ def bot_token() -> str:
 
 
 def menu_symbols(cfg: dict) -> list[str]:
-    """Stock tickers only, deduped, sorted; crypto excluded."""
+    """Stock tickers only, deduped, sorted; crypto excluded.
+
+    Watchlist symbols plus config.ANALYST_EXTRA_SYMBOLS (menu-only, so adding a
+    ticker here does not make signalbot/fundabot scan or poll it).
+    """
     out: list[str] = []
-    for watchlist in cfg.get("lists", []):
-        for raw in watchlist.get("symbols", []):
-            symbol = str(raw).strip().upper()
-            if not symbol or symbol in out or is_bybit_crypto(symbol):
-                continue
-            out.append(symbol)
+    raws = [raw for wl in cfg.get("lists", []) for raw in wl.get("symbols", [])]
+    for raw in raws + config.ANALYST_EXTRA_SYMBOLS:
+        symbol = str(raw).strip().upper()
+        if not symbol or symbol in out or is_bybit_crypto(symbol) or not is_valid_symbol(symbol):
+            continue
+        out.append(symbol)
     return sorted(out)
 
 
-def parse_holding(qty_raw: str | None, avg_raw: str | None,
-                  risk_raw: str | None) -> tuple[dict | None, str | None]:
-    """Modal inputs -> (holding dict, error message). Values must be positive."""
+def parse_holding(qty_raw: str | None, avg_raw: str | None, risk_raw: str | None,
+                  invest_raw: str | None = None) -> tuple[dict | None, str | None]:
+    """Modal inputs -> (holding dict, error message). Values must be positive.
+
+    A filled `invest_raw` adds "invest_usd": the bot then builds the fixed-ratio
+    (1:ANALYST_TARGET_RR) plan, deriving the stop from the amount to invest.
+    """
     def _num(text: str | None) -> float | None:
         text = (text or "").strip()
         if not text:
@@ -97,7 +107,9 @@ def parse_holding(qty_raw: str | None, avg_raw: str | None,
         except ValueError:
             return None
 
-    qty, avg, risk = _num(qty_raw), _num(avg_raw), _num(risk_raw)
+    qty, avg, risk, invest = _num(qty_raw), _num(avg_raw), _num(risk_raw), _num(invest_raw)
+    if invest_raw and invest_raw.strip() and (invest is None or invest <= 0):
+        return None, "⚠️ Investment amount must be a positive number."
     if (qty is None) != (avg is None):
         return None, "⚠️ Shares and average price must be given together (or both blank)."
     if qty is not None and qty <= 0:
@@ -106,11 +118,15 @@ def parse_holding(qty_raw: str | None, avg_raw: str | None,
         return None, "⚠️ Average price must be a positive number."
     if risk_raw and risk_raw.strip() and (risk is None or risk <= 0):
         return None, "⚠️ Dollar risk must be a positive number."
+    holding: dict | None = None
     if qty is not None:
-        return {"qty": qty, "avg_price": avg, "risk_usd": risk}, None
-    if risk is not None:
-        return {"qty": None, "avg_price": None, "risk_usd": risk}, None
-    return None, None
+        holding = {"qty": qty, "avg_price": avg, "risk_usd": risk}
+    elif risk is not None:
+        holding = {"qty": None, "avg_price": None, "risk_usd": risk}
+    if invest is not None:
+        holding = {**(holding or {"qty": None, "avg_price": None, "risk_usd": None}),
+                   "invest_usd": invest}
+    return holding, None
 
 
 def _chart_files(symbol: str, data: dict) -> list[discord.File]:
@@ -121,32 +137,71 @@ def _chart_files(symbol: str, data: dict) -> list[discord.File]:
     ]
 
 
+async def _deliver(interaction: discord.Interaction, symbol: str, chunks: list[str],
+                   data: dict, private: bool) -> bool:
+    """Post the analysis; returns True when it went to a public channel message.
+
+    private (ANALYST_REPLY_MODE=dm): DM the requester; when Discord refuses
+    (DMs closed) fall back to posting in the channel with an ephemeral note.
+    """
+    if private:
+        try:
+            await interaction.user.send(chunks[0], files=_chart_files(symbol, data))
+            for extra in chunks[1:]:
+                await interaction.user.send(extra)
+            await interaction.followup.send(f"📬 **{symbol}** analysis sent to your DMs.", ephemeral=True)
+            return False
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning("DM to %s failed (%s) - posting %s in the channel", interaction.user, exc, symbol)
+            channel = interaction.channel
+            if channel is not None:
+                await channel.send(chunks[0], files=_chart_files(symbol, data))
+                for extra in chunks[1:]:
+                    await channel.send(extra)
+                await interaction.followup.send(
+                    f"⚠️ Could not DM you (allow DMs from server members) - **{symbol}** was posted here.",
+                    ephemeral=True,
+                )
+                return True
+            await interaction.followup.send(chunks[0], files=_chart_files(symbol, data), ephemeral=True)
+            for extra in chunks[1:]:
+                await interaction.followup.send(extra, ephemeral=True)
+            return False
+    await interaction.followup.send(chunks[0], files=_chart_files(symbol, data))
+    for extra in chunks[1:]:
+        await interaction.followup.send(extra)
+    return True
+
+
 async def _run_and_post(interaction: discord.Interaction, symbol: str,
                         holding: dict | None) -> None:
-    """Shared flow: defer -> gather -> LLM -> chunked reply (+ chart files)."""
+    """Shared flow: defer -> gather -> LLM -> reply (DM with channel fallback)."""
     bot: AnalystBot = interaction.client  # type: ignore[assignment]
     bot.inflight.add(symbol)
+    private = config.ANALYST_REPLY_MODE == "dm"
+    public = False  # did anything land in the channel (menu must move below it)
     try:
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=private)
         data = await asyncio.to_thread(gather_symbol_data, symbol, holding=holding)
-        files = _chart_files(symbol, data)
         analysis, _model = await asyncio.to_thread(run_analysis, data)
         chunks = format_reply(symbol, analysis, data)
-        await interaction.followup.send(chunks[0], files=files)
-        for extra in chunks[1:]:
-            await interaction.followup.send(extra)
+        public = await _deliver(interaction, symbol, chunks, data, private)
     except Exception as exc:  # noqa: BLE001 — user-visible error must post
         logger.exception("analysis failed for %s", symbol)
         detail = str(exc)[:200]
         try:
             await interaction.followup.send(
                 f"⚠️ Analysis for **{symbol}** failed: `{detail}`\n"
-                f"Is LM Studio running at `{config.LLM_BASE_URL}` with the model loaded?"
+                f"Is LM Studio running at `{config.LLM_BASE_URL}` with the model loaded?",
+                ephemeral=private,
             )
+            public = public or not private
         except Exception:  # noqa: BLE001 — followup window may be gone
             logger.warning("could not deliver failure followup for %s", symbol)
     finally:
         bot.inflight.discard(symbol)
+        if public:
+            await bot.repost_menu(interaction.channel)
 
 
 class HoldingModal(discord.ui.Modal):
@@ -168,11 +223,16 @@ class HoldingModal(discord.ui.Modal):
             required=False, max_length=12, default=str(config.ANALYST_RISK_USD),
             placeholder=str(config.ANALYST_RISK_USD),
         )
-        for item in (self.shares, self.avg, self.risk):
+        self.invest = discord.ui.TextInput(
+            label=f"Invest $ for a 1:{config.ANALYST_TARGET_RR:g} plan (stop auto)",
+            required=False, max_length=12, placeholder="e.g. 2000 - blank = standard plan",
+        )
+        for item in (self.shares, self.avg, self.risk, self.invest):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
-        holding, error = parse_holding(self.shares.value, self.avg.value, self.risk.value)
+        holding, error = parse_holding(self.shares.value, self.avg.value, self.risk.value,
+                                       self.invest.value)
         if error:
             await interaction.response.send_message(error, ephemeral=True)
             return
@@ -256,6 +316,7 @@ class AnalystBot(commands.Bot):
         self._watchlist_task: asyncio.Task | None = None
         self._view_registered = False
         self._perm_attempted = False
+        self._menu_lock = asyncio.Lock()
 
     async def ensure_channel(self) -> discord.TextChannel:
         guild = next(iter(self.guilds), None)
@@ -325,6 +386,23 @@ class AnalystBot(commands.Bot):
             self.add_view(self.view)
             self._view_registered = True
             logger.info("registered persistent analyst view (%d rows)", len(self.view.children))
+
+    async def repost_menu(self, channel: discord.abc.Messageable | None) -> None:
+        """Send a fresh ticker menu below the latest analysis and drop the old one,
+        so the next pick is always at the bottom of the channel."""
+        if channel is None or not self.view.children:
+            return
+        async with self._menu_lock:
+            try:
+                old = self.menu_message
+                self.menu_message = await channel.send(MENU_INTRO, view=self.view)
+                if old is not None:
+                    try:
+                        await old.delete()
+                    except discord.HTTPException:
+                        logger.warning("could not delete the previous menu message")
+            except Exception:  # noqa: BLE001 - a failed repost must not break the analysis
+                logger.exception("menu repost failed")
 
     async def watchlist_loop(self):
         await self.wait_until_ready()

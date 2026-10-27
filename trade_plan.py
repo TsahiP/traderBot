@@ -19,6 +19,8 @@ ROUND_SHADE = 0.10          # < $200: park at X.90 just under the $X.00 level
 EXPENSIVE_PRICE = 200.0     # $200+: the dime-grid stops mattering
 EXPENSIVE_SHADE = 1.00      # $200+: shade whole dollars instead
 TP1_HALF = 0.5              # half the size comes off at TP1
+DEFAULT_TARGET_RR = 3.0     # fixed-ratio mode: reward = 3 x risk
+MIN_STOP_ATR_MULT = 0.5     # ratio-mode stop closer than this many ATRs = noise stop
 
 
 def round_break(raw: float, price: float) -> float:
@@ -68,9 +70,113 @@ def position_size(entry: float, stop: float, risk_usd: float, account: dict | No
     }
 
 
+def _attach_holding(plan: dict, holding: dict | None, price: float, stop: float) -> None:
+    """Add the existing-position block (P&L, stop vs average) to `plan` in place."""
+    if not holding:
+        return
+    try:
+        qty = float(holding.get("qty") or 0.0)
+        avg = float(holding.get("avg_price") or 0.0)
+    except (TypeError, ValueError):
+        qty = avg = 0.0
+    if qty > 0 and avg > 0:
+        value = qty * avg
+        pnl = (price - avg) * qty
+        plan["holding"] = {
+            "qty": qty,
+            "avg_price": avg,
+            "pnl_usd": round(pnl, 2),
+            "pnl_pct": round(pnl / value * 100.0 if value else 0.0, 2),
+            "stop_vs_avg_pct": round((avg - stop) / avg * 100.0 if avg else 0.0, 2),
+            "stop_breakeven_or_better": stop >= avg,
+            "plan_only_if_trigger": True,
+        }
+
+
+def build_ratio_plan(price: float, smc: dict, atr: float, invest_usd: float,
+                     target_rr: float = DEFAULT_TARGET_RR, holding: dict | None = None) -> dict:
+    """Plan driven by a fixed reward:risk (default 1:3) and an amount to invest.
+
+    The target is the structural one (nearest supply block, else the top of the
+    dealing range) and the stop is derived from it: risk = reward / target_rr.
+    With no usable target above price, the stop falls back to 2 ATR and the
+    target is placed target_rr times that distance away. Shares come from the
+    amount invested; the dollar risk is whatever that stop implies.
+    """
+    price = float(price)
+    smc = smc if isinstance(smc, dict) else {}
+    atr = float(atr) if atr and atr > 0 else 0.0
+    flags: list[str] = []
+    range_ = smc.get("range") if smc.get("range") else None
+    supply = smc.get("supply_above")
+
+    tp = None
+    if isinstance(supply, dict) and supply.get("hi") is not None:
+        tp = float(supply["hi"])
+    elif range_:
+        tp = float(range_["hi"])
+        flags.append("no_supply_block")
+    if tp is None or tp <= price:
+        dist = 2.0 * atr if atr else price * 0.04
+        tp = price + target_rr * dist
+        flags.append("target_by_ratio")
+        basis = "atr_fallback"
+    else:
+        dist = (tp - price) / target_rr
+        basis = "ratio"
+    stop = round(price - dist, 2)
+    tp = round(tp, 2)
+    if stop <= 0:
+        stop = round(price * 0.01, 2)
+        flags.append("stop_capped")
+    risk_per_share = round(price - stop, 4)
+
+    shares = int(float(invest_usd) // price) if price > 0 else 0
+    if shares < 1:
+        flags.append("invest_below_price")
+    rr = round((tp - price) / risk_per_share, 2) if risk_per_share > 0 else None
+    stop_atr = round(risk_per_share / atr, 2) if atr else None
+    if stop_atr is not None and stop_atr > MAX_STOP_ATR_MULT:
+        flags.append("stop_far_atr")
+    if stop_atr is not None and stop_atr < MIN_STOP_ATR_MULT:
+        flags.append("stop_tight_atr")
+
+    plan: dict = {
+        "ok": True,
+        "mode": "ratio",
+        "target_rr": target_rr,
+        "invest_usd": round(float(invest_usd), 2),
+        "entry": round(price, 4),
+        "stop": stop,
+        "stop_basis": basis,
+        "risk_per_share": risk_per_share,
+        "atr_atr_multiple": stop_atr,
+        "tp1": {"price": tp, "share_pct": 100, "rr": rr},
+        "tp2": {"price": None, "share_pct": 0, "rr": None},
+        "combined_rr": rr,
+        "breakeven_after_tp1": False,
+        "shares": shares,
+        "risk_usd_actual": round(shares * risk_per_share, 2),
+        "position_value": round(shares * price, 2),
+        "potential_profit_usd": round(shares * (tp - price), 2),
+        "limited_by": "invest",
+        "flags": flags,
+    }
+    _attach_holding(plan, holding, price, stop)
+    return plan
+
+
 def build_trade_plan(price: float, smc: dict, atr: float, risk_usd: float,
-                     holding: dict | None = None, account: dict | None = None) -> dict:
-    """price + snapshot_smc(1D) + ATR -> the step-5 execution block."""
+                     holding: dict | None = None, account: dict | None = None,
+                     invest_usd: float | None = None,
+                     target_rr: float = DEFAULT_TARGET_RR) -> dict:
+    """price + snapshot_smc(1D) + ATR -> the step-5 execution block.
+
+    `invest_usd` switches to the fixed-ratio plan (build_ratio_plan): the stop
+    comes from the target and `target_rr`, sizing from the amount invested.
+    """
+    if invest_usd and invest_usd > 0:
+        return build_ratio_plan(price, smc, atr, invest_usd, target_rr, holding)
     price = float(price)
     smc = smc if isinstance(smc, dict) else {}
     atr = float(atr) if atr and atr > 0 else 0.0
@@ -153,22 +259,5 @@ def build_trade_plan(price: float, smc: dict, atr: float, risk_usd: float,
         "flags": flags,
     }
 
-    if holding:
-        try:
-            qty = float(holding.get("qty") or 0.0)
-            avg = float(holding.get("avg_price") or 0.0)
-        except (TypeError, ValueError):
-            qty = avg = 0.0
-        if qty > 0 and avg > 0:
-            value = qty * avg
-            pnl = (price - avg) * qty
-            plan["holding"] = {
-                "qty": qty,
-                "avg_price": avg,
-                "pnl_usd": round(pnl, 2),
-                "pnl_pct": round(pnl / value * 100.0 if value else 0.0, 2),
-                "stop_vs_avg_pct": round((avg - stop) / avg * 100.0 if avg else 0.0, 2),
-                "stop_breakeven_or_better": stop >= avg,
-                "plan_only_if_trigger": True,
-            }
+    _attach_holding(plan, holding, price, stop)
     return plan

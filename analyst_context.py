@@ -2,8 +2,8 @@
 
 Implements the 5-step protocol (Catalysts, Macro, SMC, LazyBear squeeze,
 Execution). Every number is computed in Python from data we already pull;
-the local LLM receives one structured JSON block (step1..step5), optional
-chart PNGs, and only phrases the analysis - it never computes levels.
+the local LLM only phrases steps 1-4 and the verdict (analyst_steps), one
+small call each - Step 5 is rendered in code and it never computes levels.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from datetime import datetime
 
 import pandas as pd
 
+import analyst_steps
 import config
 import funda_client
 import news_client
@@ -21,38 +22,11 @@ import market_data
 import market_context
 import market_levels
 from confirmations import volume_ratio
-from llm_client import llm_chat_ex, resolve_llm_model, vision_user_message
+from llm_client import llm_chat_ex, resolve_llm_model
 from smc import snapshot_smc
 import squeeze as squeeze_mod
 import trade_plan
 from analysis_charts import MIN_BARS as CHART_MIN_BARS, render_analysis_chart
-
-ANALYST_SYSTEM_PROMPT = """You are a disciplined equity analyst writing a 5-step briefing card for a retail trader (long-only). You receive one DATA json block (step1..step5) about a single ticker and, when available, two chart images (1D and 15M).
-
-STYLE: think briefly at most, then write the card. Do not draft the card inside hidden reasoning; the hidden reasoning must stay short. Answer immediately in the requested sections.
-
-HARD RULES:
-1. Every number you write MUST come from the DATA json or the charts verbatim. Never invent, round, approximate (~) or extrapolate numbers. You are free to SKIP numbers; whatever numbers you cite, cite them exactly. No numbers = no quoting (qualitative phrasing is fine).
-2. Step 1 = catalysts (snapshot + price action + news). Step 2 = macro (QQQ, VIX, oil, ESLT, geopolitical headlines: judge risk-off yourself from the headlines). Step 3 = Smart Money on 1D and 15M. Step 4 = LazyBear Squeeze Momentum on 1D and 15M. Step 5 = the execution plan: report the step5_execution trade_plan fields EXACTLY as given (entry, stop, TP1, TP2, R:R, shares) - it is the ONLY plan; never derive or invent your own entry/stop/target, and never suggest shorts.
-3. A field that is n/a or an errored block is a data gap - state the gap plainly in one short phrase. Never apologize, never disclaim, never say "as an AI".
-4. Charts support the read (structure, squeeze, zones) but carry no extra rule numbers.
-5. LAYOUT - exactly these six markdown sections, nothing else:
-## Step 1 — Catalysts
-## Step 2 — Macro
-## Step 3 — Smart Money
-## Step 4 — Squeeze Momentum
-## Step 5 — Execution plan
-## Verdict
-6. WRITE FOR A HUMAN, not a JSON dump. Never paste raw key:value lists and never use JSON key names (change_pct, five_bar_pct, price_zone, ...). Each step is 2-5 Hebrew full sentences that INTERPRET what the data means for a trader, followed by one short takeaway bullet starting with "סיכום: ". Guidance per step:
-   - Step 1: who the company is, valuation vs growth story (use last_quarters *_yoy_pct = change vs the same quarter a year earlier, and the margins), price behavior today, and what the news headlines push (positive/negative/neutral). An 8-K item tag (earnings, leadership, restatement, ...) in the news is a hard catalyst - name it.
-   - Step 2: one line on QQQ regime, then VIX, oil and the geopolitical headlines -> state your risk-on/risk-off call and what it means for new entries. Then say whether the stock leads or lags SPY (relative_strength_vs_spy: excess return per period, leading_periods).
-   - Step 3: the structure story: trend bias (BOS/CHoCH), where price sits vs the demand/supply blocks and the nearest wall, and whether open FVGs / equal highs-lows create magnets or risk. Cover 1D first, then 15M. Add where price sits vs the 60-day volume profile (point of control, value area low/high): inside value = balance, above/below = acceptance or rejection.
-   - Step 4: squeeze state and momentum color on each timeframe, what that implies (compression/expansion), and whether the two timeframes agree.
-   - Step 5: weave the plan into Hebrew sentences: entry, stop and why that level (stop basis), TP1/TP2 with their R:R and share split, combined R:R, position size and actual dollar risk from the given shares. Mention the flags (tp1_rr_below_1 etc.) and what they warn about.
-7. The Verdict section has exactly two lines. First line: choose exactly ONE verdict by copying one of these patterns - "GO - confidence X/5" or "WAIT - confidence X/5" or "AVOID - confidence X/5" (long-only; never write the whole menu). Then one short Hebrew reason line on the second line.
-8. If Step 5 flags appear (tp1_rr_below_1, no_supply_block, stop_far_atr, no_structure), mention them in Step 5 and let them pull the Verdict toward WAIT/AVOID.
-9. Total answer roughly 250-600 words. Plain markdown, no code blocks, no tables. Do not explain your process or restate these rules.
-10. LANGUAGE: fluent natural Hebrew (RTL). Section headers exactly as shown above (keep the '## '). Tickers, numbers, technical terms (ATR, R:R, BOS, CHoCH, OB, FVG, squeeze) and company/product names stay English/Latin. The verdict line itself is not translated."""
 
 # timeframe -> (yfinance period, swing radius for snapshot/chart)
 TF_SPECS = {
@@ -215,6 +189,8 @@ def gather_symbol_data(
                 holding={"qty": hl.get("qty"), "avg_price": hl.get("avg_price")}
                 if hl.get("qty") and hl.get("avg_price") else None,
                 account={"equity": config.ANALYST_ACCOUNT_USD} if config.ANALYST_ACCOUNT_USD > 0 else None,
+                invest_usd=hl.get("invest_usd"),
+                target_rr=config.ANALYST_TARGET_RR,
             ),
             fetch_errors,
         )
@@ -370,17 +346,6 @@ def build_context_json(data: dict) -> str:
     return json.dumps(compact, ensure_ascii=False, default=str)
 
 
-def analysis_messages(
-    data: dict, images: list[tuple[str, bytes]] | None = None
-) -> list[dict]:
-    context = build_context_json(data)
-    text = f"Analyze {data['symbol']}.\nDATA:\n{context}"
-    return [
-        {"role": "system", "content": ANALYST_SYSTEM_PROMPT},
-        vision_user_message(text, images),
-    ]
-
-
 def _analysis_call(messages: list[dict], *, max_tokens: int = 12000) -> str:
     """LLM call with a token-budget ladder.
 
@@ -399,6 +364,7 @@ def _analysis_call(messages: list[dict], *, max_tokens: int = 12000) -> str:
             max_tokens=max_tokens,
             timeout=config.ANALYST_LLM_TIMEOUT,
             preload=(attempt == 1),
+            reasoning_effort=config.ANALYST_REASONING_EFFORT or None,
         )
         finished = meta.get("finish_reason") == "stop"
         if analysis.strip() and finished:
@@ -418,20 +384,15 @@ def _analysis_call(messages: list[dict], *, max_tokens: int = 12000) -> str:
 def run_analysis(data: dict) -> tuple[str, str]:
     """Gathered data -> (analysis_markdown, model_id).
 
-    Vision on by default (ANALYST_VISION): the two chart PNGs ride along and
-    the call falls back to text-only when the server/model rejects images.
+    One small LLM call per step (analyst_steps), Step 5 rendered in code. With
+    vision on (ANALYST_VISION) the Smart Money and Squeeze steps get the two
+    chart PNGs; each falls back to text-only when the model rejects images.
     """
     images = None
     charts = data.get("charts") or {}
     if config.ANALYST_VISION and charts:
         images = [(f"{tf} chart", png) for tf, png in charts.items() if png]
-    try:
-        analysis = _analysis_call(analysis_messages(data, images))
-    except Exception:  # noqa: BLE001
-        if not images:
-            raise
-        analysis = _analysis_call(analysis_messages(data, None))
-    return analysis, resolve_llm_model()
+    return analyst_steps.build_card(data, _analysis_call, images), resolve_llm_model()
 
 
 def _analysis_age_hours(data: dict) -> float | None:

@@ -53,14 +53,18 @@ LLM_LOAD_TIMEOUT = int(os.getenv("LLM_LOAD_TIMEOUT", "420"))  # seconds for nati
 
 # ---- Discord analyst room (analystbot: select ticker -> LLM analysis) ----
 ANALYST_CHANNEL_NAME = os.getenv("DISCORD_ANALYST_CHANNEL", "fundi-analyst")
-ANALYST_COOLDOWN_S = int(os.getenv("ANALYST_COOLDOWN_S", "20"))   # per user between clicks
+ANALYST_EXTRA_SYMBOLS = [s.strip().upper() for s in os.getenv("ANALYST_EXTRA_SYMBOLS", "").split(",") if s.strip()]  # menu-only tickers (no watchlist side effects)
+ANALYST_COOLDOWN_S =int(os.getenv("ANALYST_COOLDOWN_S", "20"))   # per user between clicks
 ANALYST_MENU_REFRESH_MIN = float(os.getenv("ANALYST_MENU_REFRESH_MIN", "10"))
 ANALYST_NEWS_MAX = int(os.getenv("ANALYST_NEWS_MAX", "6"))        # news items fed to the model
 ANALYST_SIGNALS_MAX = int(os.getenv("ANALYST_SIGNALS_MAX", "8"))  # recent bot signals fed to the model
 ANALYST_LLM_TIMEOUT = int(os.getenv("ANALYST_LLM_TIMEOUT", "600"))
 ANALYST_RISK_USD = float(os.getenv("ANALYST_RISK_USD", "250"))   # step-5 default $ risk per trade
 ANALYST_ACCOUNT_USD = float(os.getenv("ANALYST_ACCOUNT_USD", "0"))  # >0 caps step-5 size (25% position, cash)
+ANALYST_REPLY_MODE = os.getenv("ANALYST_REPLY_MODE", "dm").strip().lower()  # "dm" = analysis to the requester's DMs (channel fallback), "channel" = public
+ANALYST_TARGET_RR = float(os.getenv("ANALYST_TARGET_RR", "3"))  # reward:risk of the Discord "invest $" fixed-ratio plan
 ANALYST_VISION = os.getenv("ANALYST_VISION", "1").strip() not in ("0", "false", "False", "off")
+ANALYST_REASONING_EFFORT = os.getenv("ANALYST_REASONING_EFFORT", "none").strip()  # "" = do not send; "none" turns reasoning off (LM Studio)
 MACRO_TTL_MIN = float(os.getenv("MACRO_TTL_MIN", "10"))         # step-2 macro context cache
 
 # ---- Signal bot (candlestick patterns -> Telegram) ----
@@ -84,6 +88,11 @@ FUNDA_TTL_HOURS = 20           # a snapshot is fresh for ~a trading day
 NEWS_POLL_HOURS = 4            # news fetch interval
 NEWS_MAX_PER_SYMBOL = 5        # new items pushed to Discord per poll per symbol
 NEWS_MAX_PER_POLL = 25         # hard cap of pushes per poll
+NEWS_LLM_SUMMARY = os.getenv("NEWS_LLM_SUMMARY", "1").strip() not in ("0", "false", "False", "off")  # fundabot: read each article + summarize via LM Studio
+NEWS_LLM_MODEL = os.getenv("NEWS_LLM_MODEL", "")              # empty = same model as LLM_MODEL / auto-pick
+NEWS_SUMMARY_LANG = os.getenv("NEWS_SUMMARY_LANG", "Hebrew")  # language of the Discord summary
+NEWS_ARTICLE_MAX_CHARS = 6000  # article text fed to the model
+NEWS_SUMMARY_TIMEOUT = 120     # seconds per LLM summary
 NEWS_KEEP_PER_SYMBOL = 50      # items kept on disk per symbol
 NEWS_MAX_LOG = 5000            # rolling dedupe window for pushed items
 # Free-tier daily call caps (headroom below the provider's published limit)

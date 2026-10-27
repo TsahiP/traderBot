@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 import config
 import funda_client
 import news_client
+import news_summary
 import signals
 from market_symbols import is_bybit_crypto, normalize_symbol
 
@@ -132,6 +133,9 @@ def push_news_pass(stocks: list[str], cryptos: list[str], passes: dict) -> None:
     pushed_total = 0
     pushed_ids: list[str] = []
     sent = news_client.sent_ids()
+    summarize = config.NEWS_LLM_SUMMARY and news_summary.llm_up()
+    if config.NEWS_LLM_SUMMARY and not summarize:
+        logger.warning("LM Studio not reachable — pushing plain headlines this pass")
 
     for group, symbols in (("stocks", stocks), ("crypto", cryptos)):
         route = routes[group]
@@ -151,7 +155,8 @@ def push_news_pass(stocks: list[str], cryptos: list[str], passes: dict) -> None:
             for item in due:
                 if pushed_total >= config.NEWS_MAX_PER_POLL:
                     break
-                ok = signals.dc_send(webhook, text=news_client.push_text(item))
+                text = (news_summary.summary_message(item) if summarize else None) or news_client.push_text(item)
+                ok = signals.dc_send(webhook, text=text, suppress_embeds=True)
                 if not ok:
                     logger.warning("discord push failed %s id=%s (not marked sent)", symbol, item["id"])
                     continue

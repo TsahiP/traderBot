@@ -5,6 +5,17 @@ import discord
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_extra_symbols(monkeypatch):
+    monkeypatch.setattr(ab.config, "ANALYST_EXTRA_SYMBOLS", [])  # keep .env out of the tests
+
+
+def test_menu_symbols_merges_extras_dedupes_and_drops_invalid(monkeypatch):
+    monkeypatch.setattr(ab.config, "ANALYST_EXTRA_SYMBOLS", ["META", "nvda", "BTC-USD", "^VIX", "../x", "SPY"])
+    cfg = {"lists": [{"symbols": ["NVDA", "AAPL"]}]}
+    assert ab.menu_symbols(cfg) == ["AAPL", "META", "NVDA", "SPY"]
+
+
 def test_menu_symbols_stocks_only_and_sorted():
     cfg = {
         "lists": [
@@ -233,6 +244,7 @@ class _Recorder:
 
 
 def test_run_and_post_chunks_files_and_errors(monkeypatch):
+    monkeypatch.setattr(ab.config, "ANALYST_REPLY_MODE", "channel")
     calls = {"gather": [], "run": []}
 
     def fake_gather(symbol, holding=None):
@@ -255,7 +267,7 @@ def test_run_and_post_chunks_files_and_errors(monkeypatch):
         def __init__(self):
             self.deferred = False
 
-        async def defer(self, thinking=True):
+        async def defer(self, thinking=True, ephemeral=False):
             self.deferred = True
 
     sent: list[dict] = []
@@ -264,9 +276,14 @@ def test_run_and_post_chunks_files_and_errors(monkeypatch):
         async def send(self, content=None, files=None, **kw):
             sent.append({"content": content, "files": files or []})
 
+    reposts: list = []
+
     class _Client:
         cooldown = {}
         inflight = set()
+
+        async def repost_menu(self, channel):
+            reposts.append(channel)
 
     class _Inter:
         def __init__(self):
@@ -276,6 +293,7 @@ def test_run_and_post_chunks_files_and_errors(monkeypatch):
         user = type("U", (), {"id": 7})()
         client = _Client()
         values = ["NVDA"]
+        channel = "chan"
 
     inter = _Inter()
     inter.client = _Client()
@@ -298,3 +316,150 @@ def test_run_and_post_chunks_files_and_errors(monkeypatch):
     asyncio.get_event_loop_policy().new_event_loop().run_until_complete(ab._run_and_post(inter, "NVDA", None))
     assert "failed" in sent[-1]["content"]
     assert not _Client.inflight
+    assert reposts == ["chan", "chan"]  # menu re-posted after the success AND the failure
+
+
+def test_parse_holding_invest_amount():
+    holding, err = ab.parse_holding("", "", "", "2000")
+    assert err is None and holding == {"qty": None, "avg_price": None, "risk_usd": None, "invest_usd": 2000.0}
+    holding, err = ab.parse_holding("50", "105", "300", "$1,500")
+    assert err is None and holding["invest_usd"] == 1500.0 and holding["qty"] == 50.0
+    holding, err = ab.parse_holding("", "", "", "abc")
+    assert holding is None and "Investment" in err
+    holding, err = ab.parse_holding("", "", "", "-5")
+    assert holding is None and "Investment" in err
+    assert ab.parse_holding("50", "105.2", "300")[0] == {"qty": 50.0, "avg_price": 105.2, "risk_usd": 300.0}
+
+
+def test_modal_has_invest_field_and_passes_it(monkeypatch):
+    runs: list = []
+    monkeypatch.setattr(ab, "_run_and_post", _Recorder(runs))
+    modal = ab.HoldingModal("NVDA")
+    assert modal.invest.label and "1:" in modal.invest.label
+    _set_input(modal.shares, "")
+    _set_input(modal.avg, "")
+    _set_input(modal.risk, "")
+    _set_input(modal.invest, "2500")
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(modal.on_submit(object()))
+    assert runs[-1][1]["invest_usd"] == 2500.0
+
+
+def test_repost_menu_sends_new_then_deletes_old():
+    log: list = []
+
+    class _Msg:
+        def __init__(self, name):
+            self.name = name
+
+        async def delete(self):
+            log.append(("delete", self.name))
+
+    class _Chan:
+        async def send(self, content, view=None):
+            log.append(("send", view is not None))
+            return _Msg("new")
+
+    bot = ab.AnalystBot()
+    bot.view.refresh_symbols(["NVDA"])
+    bot.menu_message = _Msg("old")
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(bot.repost_menu(_Chan()))
+    assert log == [("send", True), ("delete", "old")]
+    assert bot.menu_message.name == "new"
+    # no tickers / no channel -> nothing happens
+    bot2 = ab.AnalystBot()
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(bot2.repost_menu(_Chan()))
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(bot.repost_menu(None))
+    assert log == [("send", True), ("delete", "old")]
+
+
+class _DmHarness:
+    """Fakes for the DM-delivery tests: records DMs, channel posts, followups."""
+
+    def __init__(self, dm_error=None, channel=True):
+        self.dms, self.channel_posts, self.followups, self.reposts = [], [], [], []
+        self.deferred_ephemeral = None
+        outer = self
+
+        class _User:
+            id = 7
+
+            async def send(self, content=None, files=None, **kw):
+                if dm_error:
+                    raise dm_error
+                outer.dms.append((content, len(files or [])))
+
+        class _Chan:
+            async def send(self, content=None, files=None, **kw):
+                outer.channel_posts.append((content, len(files or [])))
+
+        class _Resp:
+            async def defer(self, thinking=True, ephemeral=False):
+                outer.deferred_ephemeral = ephemeral
+
+        class _Follow:
+            async def send(self, content=None, files=None, ephemeral=False, **kw):
+                outer.followups.append((content, ephemeral))
+
+        class _Client:
+            inflight = set()
+
+            async def repost_menu(self, channel):
+                outer.reposts.append(channel)
+
+        self.inter = type("I", (), {})()
+        self.inter.user, self.inter.response, self.inter.followup = _User(), _Resp(), _Follow()
+        self.inter.client, self.inter.channel = _Client(), (_Chan() if channel else None)
+
+
+def _patch_pipeline(monkeypatch, mode):
+    monkeypatch.setattr(ab.config, "ANALYST_REPLY_MODE", mode)
+    monkeypatch.setattr(ab, "gather_symbol_data", lambda s, holding=None: {
+        "symbol": s, "charts": {"1d": b"p1", "15m": b"p2"}})
+    monkeypatch.setattr(ab, "run_analysis", lambda d: ("analysis", "m"))
+    monkeypatch.setattr(ab, "format_reply", lambda s, a, d: ["part 1", "part 2"])
+
+
+def _run_post(h):
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(ab._run_and_post(h.inter, "NVDA", None))
+
+
+def test_dm_mode_sends_privately_and_leaves_channel_alone(monkeypatch):
+    _patch_pipeline(monkeypatch, "dm")
+    h = _DmHarness()
+    _run_post(h)
+    assert h.dms == [("part 1", 2), ("part 2", 0)]
+    assert h.deferred_ephemeral is True
+    assert h.channel_posts == [] and h.reposts == []          # nothing public, menu stays put
+    assert h.followups == [("📬 **NVDA** analysis sent to your DMs.", True)]
+
+
+def test_dm_forbidden_falls_back_to_channel(monkeypatch):
+    _patch_pipeline(monkeypatch, "dm")
+    err = ab.discord.Forbidden(type("R", (), {"status": 403, "reason": "x"})(), "Cannot send")
+    h = _DmHarness(dm_error=err)
+    _run_post(h)
+    assert h.dms == [] and h.channel_posts == [("part 1", 2), ("part 2", 0)]
+    assert "Could not DM" in h.followups[0][0] and h.followups[0][1] is True
+    assert h.reposts == [h.inter.channel]                      # public post -> menu moves below it
+
+
+def test_dm_forbidden_without_channel_replies_ephemerally(monkeypatch):
+    _patch_pipeline(monkeypatch, "dm")
+    err = ab.discord.Forbidden(type("R", (), {"status": 403, "reason": "x"})(), "Cannot send")
+    h = _DmHarness(dm_error=err, channel=False)
+    _run_post(h)
+    assert [f[0] for f in h.followups] == ["part 1", "part 2"] and all(f[1] for f in h.followups)
+    assert h.reposts == []
+
+
+def test_dm_mode_failure_is_ephemeral(monkeypatch):
+    _patch_pipeline(monkeypatch, "dm")
+
+    def boom(symbol, holding=None):
+        raise RuntimeError("no data")
+
+    monkeypatch.setattr(ab, "gather_symbol_data", boom)
+    h = _DmHarness()
+    _run_post(h)
+    assert "failed" in h.followups[0][0] and h.followups[0][1] is True
+    assert h.reposts == []

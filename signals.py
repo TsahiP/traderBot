@@ -735,13 +735,19 @@ def discord_configured() -> dict[str, bool]:
     return {r: bool(discord_webhook_url(r)) for r in DISCORD_CANONICAL_ROUTES}
 
 
-def dc_send(webhook_url: str, text: str | None = None, photo: bytes | None = None) -> bool:
-    """Post to a Discord incoming webhook. True on HTTP 2xx."""
+def dc_send(webhook_url: str, text: str | None = None, photo: bytes | None = None,
+            suppress_embeds: bool = False) -> bool:
+    """Post to a Discord incoming webhook. True on HTTP 2xx.
+
+    suppress_embeds hides link previews (flag 4) so a bare URL doesn't expand into a card/image.
+    """
     import requests
 
+    payload = {"content": text or ""}
+    if suppress_embeds:
+        payload["flags"] = 4
     try:
         if photo is not None:
-            payload = {"content": text or ""}
             r = requests.post(
                 webhook_url,
                 data={"payload_json": json.dumps(payload)},
@@ -749,7 +755,7 @@ def dc_send(webhook_url: str, text: str | None = None, photo: bytes | None = Non
                 timeout=30,
             )
         else:
-            r = requests.post(webhook_url, json={"content": text or ""}, timeout=30)
+            r = requests.post(webhook_url, json=payload, timeout=30)
         return r.ok
     except Exception:
         return False

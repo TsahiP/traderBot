@@ -160,75 +160,41 @@ def test_build_context_json_shape():
     assert parsed["step5_execution"]["ok"] is True
 
 
-def test_analysis_messages_shape():
-    data = {
-        "symbol": "AAPL", "asset": "stock", "updated": "u", "fields": {"pe": {"v": 1, "src": "s"}},
-        "quarters": [], "news": [], "recent_signals": [], "watchlists": [],
-        "snapshot_errors": [], "fetch_errors": [],
-    }
-    msgs = ac.analysis_messages(data)
-    assert [m["role"] for m in msgs] == ["system", "user"]
-    assert isinstance(msgs[1]["content"], str)
-    assert "AAPL" in msgs[1]["content"]
-    assert '"pe"' in msgs[1]["content"]
-    assert "Verdict" in msgs[0]["content"]
-    assert '"WAIT - confidence X/5"' in msgs[0]["content"]
-
-
-def test_analysis_messages_with_images():
-    data = {"symbol": "AAPL", "updated": "u", "fields": {}, "quarters": [],
+def _plain_data(**extra):
+    return {"symbol": "AAPL", "updated": "u", "fields": {}, "quarters": [],
             "news": [], "recent_signals": [], "watchlists": [],
-            "snapshot_errors": [], "fetch_errors": []}
-    png = b"\x89PNG\r\n\x1a\n" + b"0" * 16
-    msgs = ac.analysis_messages(data, [("1d chart", png)])
-    content = msgs[1]["content"]
-    assert isinstance(content, list)
-    b64 = base64.b64encode(png).decode("ascii")
-    assert {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}} in content
-    assert any(p["type"] == "text" and "1d chart" in p["text"] for p in content)
+            "snapshot_errors": [], "fetch_errors": [], **extra}
 
 
-def test_run_analysis_vision_and_fallback(monkeypatch, tmp_path):
-    data = {"symbol": "AAPL", "updated": "u", "fields": {}, "quarters": [],
-            "news": [], "recent_signals": [], "watchlists": [],
-            "snapshot_errors": [], "fetch_errors": [],
-            "charts": {"1d": b"\x89PNG\r\n\x1a\nxxxx", "15m": b"\x89PNG\r\n\x1a\nyyyy"}}
+def test_run_analysis_one_call_per_llm_step(monkeypatch):
+    data = _plain_data(charts={"1d": b"png-xxxx", "15m": b"png-yyyy"})
     monkeypatch.setattr(ac.config, "ANALYST_VISION", True)
-
     calls: list = []
 
     def fake_llm(messages, **kw):
         calls.append(messages)
-        if len(calls) == 1:
-            raise RuntimeError("server rejected images")
-        return "## Step 1 — Catalysts\nok", {"finish_reason": "stop"}
+        return "text\nסיכום: ok\nWAIT - confidence 3/5\nreason", {"finish_reason": "stop"}
 
     monkeypatch.setattr(ac, "llm_chat_ex", fake_llm)
-    text, model = ac.run_analysis(data)
-    assert text.startswith("## Step 1")
-    assert model or None is not None
-    assert len(calls) == 2
-    assert isinstance(calls[0][1]["content"], list)   # first try: with images
-    assert isinstance(calls[1][1]["content"], str)    # fallback: text only
+    text, _model = ac.run_analysis(data)
+    assert len(calls) == 5                                   # steps 1-4 + verdict
+    assert [isinstance(c[1]["content"], list) for c in calls] == [False, False, True, True, False]
+    for title in ("## Step 1 — Catalysts", "## Step 5 — Execution plan", "## Verdict"):
+        assert title in text
 
 
 def test_run_analysis_text_only_when_vision_off(monkeypatch):
-    data = {"symbol": "AAPL", "updated": "u", "fields": {}, "quarters": [],
-            "news": [], "recent_signals": [], "watchlists": [],
-            "snapshot_errors": [], "fetch_errors": [],
-            "charts": {"1d": b"\x89PNG\r\n\x1a\nxxxx"}}
+    data = _plain_data(charts={"1d": b"png-xxxx"})
     monkeypatch.setattr(ac.config, "ANALYST_VISION", False)
     calls: list = []
 
     def fake_llm(messages, **kw):
         calls.append(messages)
-        return "## Verdict\nGO - confidence 4/5", {"finish_reason": "stop"}
+        return "ok\nסיכום: ok", {"finish_reason": "stop"}
 
     monkeypatch.setattr(ac, "llm_chat_ex", fake_llm)
-    text, _model = ac.run_analysis(data)
-    assert "GO" in text
-    assert len(calls) == 1
-    assert isinstance(calls[0][1]["content"], str)   # no image parts
+    ac.run_analysis(data)
+    assert all(isinstance(c[1]["content"], str) for c in calls)   # no image parts
 
 
 def test_analysis_call_escalates_budget_on_empty(monkeypatch):

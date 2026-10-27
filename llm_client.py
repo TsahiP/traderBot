@@ -153,6 +153,8 @@ def llm_chat_ex(
     timeout: int = 600,
     enable_thinking: bool | None = None,
     preload: bool = False,
+    reasoning_effort: str | None = None,
+    model: str | None = None,
 ) -> tuple[str, dict]:
     """One chat round trip -> (final content, meta) with reasoning diagnostics.
 
@@ -161,7 +163,7 @@ def llm_chat_ex(
     if the think phase burns the whole token budget the final content stays
     empty and finish_reason is "length" - callers can escalate the budget.
     """
-    model = resolve_llm_model()
+    model = model or resolve_llm_model()
     if preload:
         ensure_model_loaded(model)
     body = {
@@ -172,9 +174,12 @@ def llm_chat_ex(
     }
     if enable_thinking is not True:  # default (None) and explicit False both disable
         body["chat_template_kwargs"] = {"enable_thinking": False}
+    if reasoning_effort:
+        body["reasoning_effort"] = reasoning_effort
     raw = _post(url=f"{config.LLM_BASE_URL}/chat/completions", json=body, timeout=timeout)
     if raw is None:  # kwargs rejected -> plain retry
         body.pop("chat_template_kwargs", None)
+        body.pop("reasoning_effort", None)
         raw = _post(url=f"{config.LLM_BASE_URL}/chat/completions", json=body, timeout=timeout)
         if raw is None:
             raise RuntimeError("LLM server rejected the chat/completions request")

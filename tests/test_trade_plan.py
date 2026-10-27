@@ -104,3 +104,34 @@ def test_position_size_with_account_caps():
     assert s["risk_usd_actual"] == 250.0
     plain = tp.position_size(entry=100.0, stop=95.0, risk_usd=120.0)
     assert plain["limited_by"] == "max_loss"
+
+
+def test_ratio_plan_derives_stop_from_target():
+    smc = {"range": {"lo": 90.0, "hi": 130.0, "mid": 110.0}, "supply_above": {"hi": 124.0},
+           "demand_below": {"lo": 95.0}}
+    plan = tp.build_trade_plan(100.0, smc, 2.0, 250.0, invest_usd=2000.0, target_rr=3.0)
+    assert plan["mode"] == "ratio" and plan["tp1"]["price"] == 124.0
+    assert plan["stop"] == 92.0            # risk = (124-100)/3 = 8
+    assert plan["tp1"]["rr"] == 3.0 and plan["combined_rr"] == 3.0
+    assert plan["shares"] == 20 and plan["position_value"] == 2000.0
+    assert plan["risk_usd_actual"] == 160.0 and plan["potential_profit_usd"] == 480.0
+    assert plan["stop_basis"] == "ratio" and plan["tp2"]["price"] is None
+    assert "stop_far_atr" not in plan["flags"]  # 8 / ATR 2 = 4.0: only strictly above 4.0 is far
+    plan = tp.build_trade_plan(100.0, smc, 1.0, 250.0, invest_usd=2000.0)
+    assert "stop_far_atr" in plan["flags"]       # 8 ATRs
+
+
+def test_ratio_plan_fallbacks_and_flags():
+    # no structure above price -> ATR distance, target placed by ratio
+    plan = tp.build_trade_plan(100.0, {}, 2.0, 250.0, invest_usd=1000.0)
+    assert plan["stop"] == 96.0 and plan["tp1"]["price"] == 112.0
+    assert "target_by_ratio" in plan["flags"] and plan["tp1"]["rr"] == 3.0
+    # target hugging the price -> noise stop is flagged
+    smc = {"range": {"lo": 90.0, "hi": 100.6, "mid": 95.0}, "supply_above": {"hi": 100.6}}
+    plan = tp.build_trade_plan(100.0, smc, 2.0, 250.0, invest_usd=1000.0)
+    assert "stop_tight_atr" in plan["flags"]
+    # budget below one share
+    plan = tp.build_trade_plan(100.0, {}, 2.0, 250.0, invest_usd=50.0)
+    assert plan["shares"] == 0 and "invest_below_price" in plan["flags"]
+    # without invest_usd the classic plan is untouched
+    assert tp.build_trade_plan(100.0, {}, 2.0, 250.0).get("mode") != "ratio"

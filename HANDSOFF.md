@@ -408,33 +408,48 @@ no free typing. The flow:
    SMC overlay + squeeze sub-panel). Every sub-step is failure-isolated; errors
    collect in `fetch_errors` / `snapshot_errors` and surface as
    `data_problem_notes` to the model.
-3. **LLM** (`analyst_context.run_analysis`): one `ANALYST_SYSTEM_PROMPT` sits in
-   front of a compact `build_context_json(DATA)` block (step1_catalysts …
-   step5_execution + signals + watchlists + holding). All numbers are computed
-   in Python; the prompt forbids inventing numbers — quote verbatim or state a
-   data gap — and caps the reply under 650 words in fixed sections ending with
-   `## Verdict` (`GO | WAIT | AVOID - confidence X/5`). **The LLM writes the
-   briefing in Hebrew** (rule 9: flu Hebrew bullets, English section headers,
-   tickers/numbers/technical terms stay Latin, verdict line verbatim). With
-   `ANALYST_VISION=1` (default) the two chart PNGs ride along via `llm_client.vision_user_message`
-   (data-URI image parts); if the server rejects images, run_analysis retries
-   text-only. Chunks are posted with the chart files attached to the first
-   message (Discord 2000-char chunks, per-user cooldown `ANALYST_COOLDOWN_S`).
+3. **LLM** (`analyst_context.run_analysis` -> `analyst_steps.build_card`): **one
+   small call per step** instead of one giant card (the single call made local
+   models loop and mix up fields). Steps 1-4 each get only their own slice of the
+   data (`step_slice`: bar indices stripped; stale/inconsistent SEC fundamentals
+   dropped by `clean_fundamentals`, noted as a data gap), their own guidance and a
+   6000-token first rung (`_analysis_call` still escalates 6000 -> 15000 -> 33000).
+   Steps 3-4 also get the two chart PNGs (`ANALYST_VISION=1`, text-only fallback).
+   **Step 5 is rendered in Python** (`render_execution`) from `trade_plan`, so its
+   numbers are exact and "no TP2" is plain Hebrew. A fifth call picks the verdict
+   from the four `סיכום:` lines + plan flags; code caps GO to WAIT when the plan has
+   a quality flag (`tp1_rr_below_1`, `stop_far_atr`, `no_structure`, ...). Each LLM
+   step is checked for numbers absent from its DATA and for leaked JSON key names,
+   with one guarded retry; a dead step becomes a one-line gap, never kills the card.
+   Chunks are posted with the chart files on the first message (Discord 2000-char
+   chunks, per-user cooldown `ANALYST_COOLDOWN_S`).
 
-Gotcha: **Bonsai 27B is a qwen35 reasoning model** — LM Studio ignores
-`chat_template_kwargs.enable_thinking=false` and routes the think phase to a
-separate `reasoning_content`; when thinking eats the budget, `content` comes
-back empty or truncated with `finish_reason: "length"`. `llm_client.llm_chat_ex`
-exposes the finish meta and `analyst_context._analysis_call` climbs a token
-ladder (12000 → 27000 → 57000, escalation on empty OR length) — observed
-~60 tok/s loaded, so a full run costs about 1–4 minutes. The system prompt
-also demands short hidden thinking and forbids inventing/approximating
-numbers (temperature 0.2). `llm_chat` keeps its old string-only signature for
-the dashboard + fundabot. Disable the images with `ANALYST_VISION=0` when it
-hurts. Tests: `tests/test_analyst_context.py` (13:
-steps offline, prompt/messages/vision/fallback, format) and
-`tests/test_analystbot.py` (12: menu, cooldown, inflight, modal validation,
-shared run helper incl. failure path).
+**Fixed-ratio plan (1:3).** The popup has a 4th field "Invest $ for a 1:3 plan".
+Filled -> `parse_holding` adds `invest_usd` -> `trade_plan.build_ratio_plan`: target
+= nearest supply block (else top of the range), **stop = entry - (target - entry) / 3**
+(`ANALYST_TARGET_RR`), shares = floor(invest / price), single 100% exit at the
+target; no structural target above price -> 2 ATR stop and a target 3x that far
+(`target_by_ratio`). Flags `stop_tight_atr` (< 0.5 ATR), `stop_far_atr`,
+`invest_below_price` cap GO to WAIT. Step 5 text comes from `_render_ratio`.
+Blank = the classic structural plan. **Private reply (`ANALYST_REPLY_MODE`, default `dm`):** the interaction is deferred
+ephemeral, the briefing + charts go to the requester's DMs and an ephemeral
+"sent to your DMs" note replaces the public post; `discord.Forbidden`/HTTP error
+(DMs closed) -> posted in the channel with an ephemeral warning. `channel` = old public
+behavior. **Menu repost:** whenever something landed in the channel (fallback, or
+`channel` mode, also on failure) `AnalystBot.repost_menu` sends a fresh menu at the bottom and deletes the
+previous one (no re-pin, to avoid "pinned a message" notices).
+
+Gotcha: **thinking models loop in their reasoning** — Bonsai 27B is Q1_0 (1-bit)
+and degenerated; Gemma-4 drafted the whole answer inside `reasoning_content` and
+re-verified numbers until the budget ran out (empty `content`). LM Studio ignores
+`chat_template_kwargs.enable_thinking=false` but honours **`reasoning_effort:
+"none"`** (`ANALYST_REASONING_EFFORT`, default `none`; `llm_client.llm_chat_ex`
+drops it on a server rejection). With it, gemma-4-26b-a4b-qat writes the whole
+card in ~17 s (~536 words); set it empty to restore the server default. Current
+model: `LLM_MODEL=google/gemma-4-26b-a4b-qat` (qwen/qwen3.8-27b is the slower,
+more detailed alternative, ~200 s). Tests: `tests/test_analyst_steps.py`,
+`tests/test_analyst_context.py`, `tests/test_analystbot.py`.
+
 ## 15. Ideas ported from day-trader-skill and mcp-trader — last verified 2026-10-27
 
 - **Alert follow-ups:** `signal_outcomes.update_pending()` marks delivered
