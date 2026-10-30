@@ -71,6 +71,9 @@ def test_latest_setup_states_and_last_event(j):
     j.add_event("swing.pass", {"day": "2026-10-30"})
     assert j.last_event("swing.pass")["payload"] == {"day": "2026-10-30"}
     assert j.last_event("nope") is None
+    assert [(s["symbol"], s["day"]) for s in j.latest_setups("2026-10-01")] == [("QQQ", "2026-10-29"),
+                                                                              ("SPY", "2026-10-30")]
+    assert j.latest_setups("2026-10-30") == [j.get_setup("swing_sma", "SPY", "2026-10-30")]
 
 
 def test_decisions_and_entries_today(j):

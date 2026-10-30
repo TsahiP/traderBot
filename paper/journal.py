@@ -215,6 +215,15 @@ class Journal:
         return self._one("SELECT * FROM setups WHERE run_id = ? AND symbol = ? ORDER BY day DESC LIMIT 1",
                          (run_id, symbol))
 
+    def latest_setups(self, since_day: str) -> list[dict]:
+        """The newest setup of every run/symbol seen since `since_day` - a swing setup
+        decided on Thursday is still what that run is watching on Friday."""
+        return self._all(
+            "SELECT s.* FROM setups s JOIN (SELECT run_id, symbol, MAX(day) AS day FROM setups"
+            " WHERE day >= ? GROUP BY run_id, symbol) m"
+            " ON s.run_id = m.run_id AND s.symbol = m.symbol AND s.day = m.day ORDER BY s.run_id, s.symbol",
+            (since_day,))
+
     def setups_in_state(self, state: str) -> list[dict]:
         return self._all("SELECT * FROM setups WHERE state = ? ORDER BY day, run_id, symbol", (state,))
 

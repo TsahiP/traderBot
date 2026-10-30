@@ -19,9 +19,10 @@ import {
 } from "@/lib/schemas";
 
 /* Live link to paperbot: GET /state for the snapshot, then an EventSource on
-   /stream that applies each event as it arrives. The browser reconnects the
-   stream by itself and sends Last-Event-ID, so nothing is missed; after a
-   reconnect the snapshot is fetched again. While the bot is unreachable the
+   /stream that applies each event as it arrives. When the stream drops, the
+   hook reconnects from scratch - a fresh snapshot, then the stream from just
+   before it (the last events refill the feed) - so nothing is missed even if
+   the bot restarted in between. While the bot is unreachable the
    desk shows history from dashboard.py (/api/paper/state) and keeps retrying. */
 
 export const PAPERBOT_URL = process.env.NEXT_PUBLIC_PAPERBOT_URL ?? "http://127.0.0.1:8100";
@@ -42,9 +43,8 @@ export function usePaperStream() {
     let source: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-    let dropped = false;
 
-    async function fetchState(): Promise<number | null> {
+    async function fetchState(fresh = false): Promise<number | null> {
       try {
         const res = await fetch(`${PAPERBOT_URL}/state`, { cache: "no-store" });
         if (!res.ok) return null;
@@ -55,7 +55,7 @@ export function usePaperStream() {
         }
         if ("starting" in parsed.data) return 0;
         const snapshot = parsed.data;
-        if (!stopped) setView((v) => fromSnapshot(v, snapshot));
+        if (!stopped) setView((v) => fromSnapshot(fresh ? emptyView() : v, snapshot));
         return snapshot.last_event_id;
       } catch {
         return null;
@@ -79,7 +79,7 @@ export function usePaperStream() {
 
     async function connect() {
       if (stopped) return;
-      const lastId = await fetchState();
+      const lastId = await fetchState(true);
       if (stopped) return;
       if (lastId === null) {
         setConnection("offline");
@@ -89,13 +89,7 @@ export function usePaperStream() {
       }
       const after = Math.max(0, lastId - BACKLOG_EVENTS);
       source = new EventSource(`${PAPERBOT_URL}/stream?after=${after}`);
-      source.onopen = () => {
-        setConnection("live");
-        if (dropped) {
-          dropped = false;
-          void fetchState();
-        }
-      };
+      source.onopen = () => setConnection("live");
       source.onmessage = (msg) => {
         let raw: unknown;
         try {
@@ -110,9 +104,13 @@ export function usePaperStream() {
         if (needsRefresh(event)) scheduleRefresh();
       };
       source.onerror = () => {
-        dropped = true;
+        // Start clean instead of letting the browser resume with an old Last-Event-ID:
+        // the bot may have restarted (or its journal been replaced) in between.
+        source?.close();
+        source = null;
         setConnection("offline");
         void loadHistory();
+        retryTimer = setTimeout(() => void connect(), RETRY_MS);
       };
     }
 

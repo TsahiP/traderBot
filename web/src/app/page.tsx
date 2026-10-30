@@ -1,12 +1,13 @@
 "use client";
 
-import { FlaskConical, LayoutDashboard, Newspaper, Radar, ScanSearch } from "lucide-react";
+import { Activity, FlaskConical, LayoutDashboard, Newspaper, Radar, ScanSearch } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { SignalsPanel } from "@/components/signals/signals-panel";
 import { FundiPanel } from "@/components/fundi/fundi-panel";
 import { ScannerPanel } from "@/components/scanner/scanner-panel";
+import { PaperPanel } from "@/components/paper/paper-panel";
 import { TickerTape } from "@/components/ticker-tape";
 import { StatCards } from "@/components/stat-cards";
 import { EquityChart } from "@/components/charts/equity-chart";
@@ -35,6 +36,10 @@ export default function Home() {
             <TabsTrigger value="dashboard" className="gap-1.5">
               <LayoutDashboard data-icon="inline-start" />
               Dashboard
+            </TabsTrigger>
+            <TabsTrigger value="paper" className="gap-1.5">
+              <Activity data-icon="inline-start" />
+              Paper desk
             </TabsTrigger>
             <TabsTrigger value="lab" className="gap-1.5">
               <FlaskConical data-icon="inline-start" />
@@ -82,6 +87,10 @@ export default function Home() {
                 <TradeLedger trades={trades?.trades} />
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="paper" className="flex flex-col gap-4">
+            <PaperPanel />
           </TabsContent>
 
           <TabsContent value="lab" className="flex flex-col gap-4">

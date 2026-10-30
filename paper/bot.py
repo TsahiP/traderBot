@@ -43,6 +43,7 @@ NY = ZoneInfo("America/New_York")
 
 SWING_PASS_DELAY = timedelta(minutes=20)    # after the close: the daily bar is final on the free 15-min-delayed feed
 BROKER_REFRESH_S = 15.0                     # account / positions cache
+SETUP_LOOKBACK = timedelta(days=10)         # /state shows each run/symbol's newest setup from this window
 EXIT_REASON_BY_TYPE = {"limit": "target", "stop": "stop", "stop_limit": "stop"}
 COMMANDS = ("pause", "resume", "flatten_all", "close_position", "set_approval", "approve", "reject")
 
@@ -660,8 +661,9 @@ class Bot:
         proposals = [{"id": p["id"], "run_id": p["run_id"], "symbol": p["symbol"], "side": p["side"], "qty": p["qty"],
                       "max_loss": p["max_loss"], "plan": p["plan"], "stages": p["stages"]}
                      for p in self.executor.pending_proposals()]
-        setups = self.journal.setups(day) + [s for s in self.journal.setups_in_state(S.TRIGGERED.value)
-                                             if s["day"] != day]
+        run_ids = {r.id for r in runs_from_config(self.cfg)}
+        since = (now.date() - SETUP_LOOKBACK).isoformat()
+        setups = [s for s in self.journal.latest_setups(since) if s["run_id"] in run_ids]
         return {
             "ts": _iso(now), "pid": self.pid, "paused": self.paused, "market": self.market,
             "next_wake": self.next_wake, "streams": self._streams_health(),

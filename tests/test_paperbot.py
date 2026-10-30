@@ -309,4 +309,12 @@ def test_start_reconciles_and_snapshot_shape(env):
                          "setups", "counters", "last_event_id"}
     assert snap["market"] == "open" and snap["config"]["approval_mode"] == "auto"
     assert snap["counters"]["open_risk_usd"] == 12.0          # 3 x (100 - 96)
+
+
+def test_snapshot_shows_yesterdays_swing_setup_today(env):
+    bot, fb, journal, _, _, _ = env
+    bot.tick(THU)
+    bot.tick(FRI)
+    [row] = bot.snapshot["setups"]
+    assert (row["symbol"], row["day"], row["state"]) == ("SPY", "2026-10-29", "ENTERED")
     assert bot.next_wake.startswith("2026-10-30T16:20")
