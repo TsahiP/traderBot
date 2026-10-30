@@ -45,6 +45,13 @@ RISK_NO_ENTRIES_AFTER = "15:30"
 # Size each entry to fit the limits above (max loss, position cap, cash buffer),
 # capped at QUANTITY. False = always QUANTITY shares, and the gate blocks if too big.
 RISK_SIZE_BY_RISK = True
+LIVEBOT_LOCK_PATH = OUTPUT_DIR / "livebot.lock"  # pid; livebot and paperbot never trade together
+
+# ---- Paper desk (paperbot.py: runs + journal + live UI push; paper/ package) ----
+PAPERBOT_CONFIG_PATH = OUTPUT_DIR / "paperbot_config.json"  # runs, risk, LLM / approval modes
+PAPERBOT_DB_PATH = OUTPUT_DIR / "paperbot.db"               # SQLite journal (WAL)
+PAPERBOT_LOCK_PATH = OUTPUT_DIR / "paperbot.lock"
+PAPERBOT_PORT = int(os.getenv("PAPERBOT_PORT", "8100"))     # HTTP + SSE, bound to 127.0.0.1
 
 # ---- Local LLM advisor (LM Studio) ----
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
