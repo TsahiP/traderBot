@@ -21,6 +21,7 @@ from paper.bot import Bot
 from paper.broker import Broker, BrokerError
 from paper.bus import EventBus
 from paper.journal import Journal
+from paper.server import start_server
 from paper.streams import QuoteStreamThread, TradingStreamThread
 
 NY = ZoneInfo("America/New_York")
@@ -65,6 +66,7 @@ def main() -> None:
         streams = [trading, quotes]
 
         logger.info("paperbot starting (pid %s, config %s)", os.getpid(), bot.cfg_hash)
+        start_server(bot, config.PAPERBOT_PORT)
         trading.start()
         bot.start(datetime.now(NY))
         while True:
