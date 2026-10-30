@@ -21,6 +21,7 @@ from paper.bot import Bot
 from paper.broker import Broker, BrokerError
 from paper.bus import EventBus
 from paper.journal import Journal
+from paper.notify import DiscordNotifier
 from paper.server import start_server
 from paper.streams import QuoteStreamThread, TradingStreamThread
 
@@ -47,7 +48,7 @@ def main() -> None:
     ok, reason = lock.acquire(config.PAPERBOT_LOCK_PATH, other=config.LIVEBOT_LOCK_PATH)
     if not ok:
         sys.exit(f"paperbot not started: {reason}")
-    journal = None
+    journal = bus = notifier = None
     streams = []
     try:
         load_dotenv(config.BASE_DIR / ".env")
@@ -59,6 +60,9 @@ def main() -> None:
         journal = Journal(config.PAPERBOT_DB_PATH)
         bus = EventBus(journal)
         bot = Bot(broker, journal, bus, config.PAPERBOT_CONFIG_PATH)
+        notifier = DiscordNotifier(lambda: bot.cfg)
+        bus.add_listener(notifier)
+        notifier.start()
         trading = TradingStreamThread(bot.inbox, key, secret)
         quotes = QuoteStreamThread(bot.inbox, key, secret)
         bot.streams["trading"] = trading
@@ -81,11 +85,12 @@ def main() -> None:
     finally:
         for s in streams:
             s.stop()
+        if bus is not None:
+            bus.publish("bot.stop", {"pid": os.getpid()})
+        if notifier is not None:
+            notifier.stop(timeout=10.0)     # lets the "stopped" message go out
         if journal is not None:
-            try:
-                EventBus(journal).publish("bot.stop", {"pid": os.getpid()})
-            finally:
-                journal.close()
+            journal.close()
         lock.release(config.PAPERBOT_LOCK_PATH)
 
 

@@ -11,6 +11,7 @@ _TF = r"(?:1m|5m|15m|30m|1h|1d|1w)"
 _PREFixed = re.compile(rf"^(stock|crypto)[-_]({_TF})$")
 _TF_ONLY = re.compile(rf"^({_TF})$")
 _NEWS = re.compile(r"^(stock|crypto)[-_]news$")
+_PAPER = re.compile(r"^paper(-desk)?$")    # paperbot notifications (paper/notify.py), not a signal room
 
 
 def _slug(text: str) -> str:
@@ -27,10 +28,13 @@ def _asset_from_category(category_name: str | None) -> str | None:
 
 
 def parse_channel_route(channel_name: str, category_name: str | None = None) -> str | None:
-    """Return canonical route (e.g. stock_1h) or None if the channel is not a signal room."""
+    """Return canonical route (e.g. stock_1h), "paper" for the paperbot room, or None."""
     name = _slug(channel_name)
     if not name:
         return None
+
+    if _PAPER.match(name):
+        return "paper"
 
     news = _NEWS.match(name)
     if news:
