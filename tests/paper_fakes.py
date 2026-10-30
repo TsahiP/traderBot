@@ -10,12 +10,54 @@ sibling, `fail_next()` makes the next call of a method raise.
 from __future__ import annotations
 
 import itertools
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
+from paper import config as pcfg
 from paper.broker import OPEN_STATUSES, exit_legs
+from paper.funnel import FunnelContext
+from paper.runs import Intent, Run
 
 TS = "2026-10-30T10:15:00-04:00"
+NY = ZoneInfo("America/New_York")
+DECIDED_AT = datetime(2026, 10, 29, 16, 5, tzinfo=NY)    # swing pass after the close
+ENTRY_AT = datetime(2026, 10, 30, 9, 45, tzinfo=NY)      # its order goes out next morning
+
+
+def flat_bars(n: int = 60, rng: float = 2.0, close: float = 100.0) -> pd.DataFrame:
+    """Flat daily closes with a constant high-low range, so ATR14 == rng."""
+    idx = pd.date_range("2026-08-01", periods=n, freq="B", tz=NY)
+    c = np.full(n, close)
+    return pd.DataFrame({"Open": c, "High": c + rng / 2, "Low": c - rng / 2, "Close": c,
+                         "Volume": np.full(n, 1e6)}, index=idx)
+
+
+def swing_run(**over) -> Run:
+    raw = next(r for r in pcfg.default_config()["runs"] if r["id"] == "swing_sma")
+    return Run.from_config({**raw, **over})
+
+
+def entry_intent(side: str = "long", symbol: str = "SPY", ref_price: float = 100.0) -> Intent:
+    return Intent("entry", "swing_sma", symbol, side, "2026-10-29", ref_price,
+                  "SMA 10 crossed above SMA 50")
+
+
+def funnel_ctx(**over) -> FunnelContext:
+    """A context where a long SPY swing entry at 100 passes: ATR 2 -> stop 96,
+    target 108, 50 shares by the $200 max loss."""
+    base = dict(
+        now_ny=DECIDED_AT, entry_at=ENTRY_AT, cfg=pcfg.default_config(), run=swing_run(),
+        universe={"SPY"}, account={"equity": 100_000.0, "cash": 100_000.0, "buying_power": 200_000.0},
+        positions=[], pending_symbols=set(), entries_today=[], run_entries_today=[],
+        open_risk_usd=0.0, short_exposure_usd=0.0,
+        asset={"symbol": "SPY", "tradable": True, "shortable": True, "easy_to_borrow": True},
+        bars=flat_bars(), price=100.0,
+    )
+    base.update(over)
+    return FunnelContext(**base)
 
 
 class FakeBroker:

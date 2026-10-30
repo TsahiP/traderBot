@@ -70,6 +70,8 @@ _ORDER_COLS = ("parent_id", "decision_id", "trade_id", "kind", "side", "symbol",
                "tif", "status", "limit_price", "stop_price", "filled_qty", "filled_avg",
                "submitted_at", "updated_at")
 _TRADE_UPDATABLE = ("qty", "stop", "target", "mae_r", "mfe_r", "score", "llm_verdict")
+_DECISION_UPDATABLE = ("outcome", "failed_stage", "score", "qty", "max_loss", "stages", "plan",
+                       "llm_verdict", "llm_would_block")
 
 
 class JournalError(ValueError):
@@ -232,6 +234,21 @@ class Journal:
             raise JournalError(f"unknown decision outcome {outcome!r}")
         self._write("UPDATE decisions SET outcome = ?, failed_stage = ? WHERE id = ?",
                     (outcome, failed_stage, decision_id))
+
+    def update_decision(self, decision_id: int, **fields) -> None:
+        """Rewrite a decision after a re-check (an approved proposal, a queued entry)."""
+        unknown = sorted(set(fields) - set(_DECISION_UPDATABLE))
+        if unknown:
+            raise JournalError(f"decision field(s) {', '.join(unknown)} cannot be updated")
+        if "outcome" in fields and fields["outcome"] not in OUTCOMES:
+            raise JournalError(f"unknown decision outcome {fields['outcome']!r}")
+        if fields:
+            sets = ", ".join(f"{c} = ?" for c in fields)
+            self._write(f"UPDATE decisions SET {sets} WHERE id = ?",
+                        (*(_enc(c, v) for c, v in fields.items()), decision_id))
+
+    def decisions_by_outcome(self, outcome: str) -> list[dict]:
+        return self._all("SELECT * FROM decisions WHERE outcome = ? ORDER BY id", (outcome,))
 
     def decision(self, decision_id: int) -> dict | None:
         return self._one("SELECT * FROM decisions WHERE id = ?", (decision_id,))

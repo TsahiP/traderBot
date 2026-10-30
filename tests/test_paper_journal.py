@@ -80,6 +80,22 @@ def test_decisions_and_entries_today(j):
     assert [d["symbol"] for d in j.decisions(day="2026-10-30")] == ["AAPL", "QQQ", "SPY"]
 
 
+def test_update_decision_and_list_by_outcome(j):
+    did = j.add_decision(ts=TS, run_id="swing_sma", symbol="SPY", side="long", outcome="proposed",
+                         qty=50, max_loss=200.0, stages=[], plan={"stop": 96.0}, config_hash="abc")
+    j.add_decision(ts=TS, run_id="swing_sma", symbol="QQQ", side="long", outcome="blocked",
+                   stages=[], config_hash="abc")
+    assert [d["id"] for d in j.decisions_by_outcome("proposed")] == [did]
+    j.update_decision(did, outcome="entered", qty=49, plan={"stop": 97.0}, stages=[{"stage": "risk"}])
+    row = j.decision(did)
+    assert row["outcome"] == "entered" and row["qty"] == 49 and row["plan"] == {"stop": 97.0}
+    assert j.decisions_by_outcome("proposed") == []
+    with pytest.raises(JournalError):
+        j.update_decision(did, outcome="maybe")
+    with pytest.raises(JournalError):
+        j.update_decision(did, symbol="QQQ")
+
+
 def test_order_upsert_merges_fields(j):
     j.upsert_order("o1", kind="entry", side="buy", qty=10, type="market", tif="gtc",
                    status="new", submitted_at=TS, decision_id=7)
