@@ -141,6 +141,8 @@ def test_webhook_url_resolution(monkeypatch, tmp_path):
 
 
 def test_paper_desk_channel_syncs_to_the_paper_route():
+    assert dcr.parse_channel_route("paperbot") == "paper"
+    assert dcr.parse_channel_route("paper-bot") == "paper"
     assert dcr.parse_channel_route("paper-desk") == "paper"
     assert dcr.parse_channel_route("paper_desk") == "paper"
     assert dcr.parse_channel_route("paper") == "paper"

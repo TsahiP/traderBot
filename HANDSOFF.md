@@ -148,6 +148,9 @@ tradebot/
 - Fixed quantity per trade (`qty`); optional **shorts** (`allow_short`): −1 opens a short, +1 covers; shorts need buying power at entry.
 - **Costs:** `cost_per_share` is charged on every fill (commission + slippage, both sides per round trip); tracked per trade and summed in `metrics.costs_total`. Intraday backtests are meaningless without it.
 - **Flat EOD:** strategies with `flat_eod` + any intraday timeframe force-close open positions at the last bar of each session (marked **EOD** on the chart, amber). Daily runs never flatten.
+- `paperbot.py` (the Paper desk, §16) runs the same SMA logic as its
+  `swing_sma` run, with the decision funnel, live UI and journal; the notes
+  below are about `livebot.py`, which still works but never alongside it.
 - Live bot still runs the SMA crossover on the **last completed daily bar**,
   but every entry is an Alpaca **bracket** (market buy, GTC stop-loss at
   `STOP_ATR_MULT` × ATR(14), GTC take-profit at `TARGET_R` R), sent only after
@@ -508,3 +511,60 @@ more detailed alternative, ~200 s). Tests: `tests/test_analyst_steps.py`,
   into the real `logs/analystbot.log`.
 - Session state (running PIDs, what was verified, open items):
   [HANDOFF_2026-10-27.md](HANDOFF_2026-10-27.md).
+
+## 16. Paper desk (paperbot + live UI) — phase 1, last verified 2026-10-30
+
+Spec: [docs/superpowers/specs/2026-10-30-paper-desk-design.md](docs/superpowers/specs/2026-10-30-paper-desk-design.md),
+plan: [docs/superpowers/plans/2026-10-30-paper-desk-phase1.md](docs/superpowers/plans/2026-10-30-paper-desk-phase1.md).
+
+- **Run:** `python paperbot.py` (or `.\start-web.ps1 -Paperbot`, or the
+  `tradebot-paperbot` launch config). HTTP/SSE on `127.0.0.1:8100`
+  (`PAPERBOT_PORT`), journal `output/paperbot.db`, config
+  `output/paperbot_config.json` (defaults written on first start, re-read on
+  change, a broken file keeps the last good one), log `logs/paperbot.log`.
+- **Files** (`paper/`): `config` (validation, hash, `set_approval`),
+  `journal` (SQLite WAL: events = SSE ids, setups, decisions, orders, trades
+  with P&L and R, commands, equity, heartbeat), `bus` (store + fan-out in id
+  order), `broker` (the only alpaca-py import; always `paper=True`), `streams`
+  (TradingStream + IEX quotes, rebuilt after a failure), `exit_plan`, `runs`
+  (setup state machine, `evaluate_daily`), `funnel` (12 stages; news / score /
+  Time Machine / LLM report skip until phases 2–3), `executor` (re-check at
+  send, brackets, proposals, exits), `reconcile` (startup), `bot` (the loop),
+  `server` (`/health`, `/state`, `/stream`, `/commands`), `notify` (Discord),
+  `lock` (livebot ↔ paperbot). UI: `web/src/components/paper/*`,
+  `hooks/use-paper-stream.ts`, `lib/paper-reducer.ts`, `lib/schemas/paper.ts`.
+- **Flow:** swing pass at close + 20 min (the free feed's daily bar is final
+  by then) → exits sent at once, entries decided and queued for the next
+  session at `no_entries_before` → re-checked and sent as GTC brackets →
+  fills arrive from the order stream → trade opened/closed in the journal →
+  every step published on the bus → SSE → Paper desk. A queued entry that
+  meets a paused bot or a passed window is blocked/expired, never sent late.
+- **Approval switch:** `approval_mode` auto (default) / manual, flipped from
+  the UI (`set_approval` writes the config file). Manual entries are
+  proposals; Approve works only in the entry window with the market open and
+  re-checks at the current price; switching off leaves pending proposals.
+- **Reconcile on start** (idempotent): entries filled while off open their
+  trades, trades closed while off are recorded at the real leg/exit fill (or
+  `broker` at the last price), unknown positions are adopted with their own
+  stop/target or a protective 2×ATR / 2R OCO (stop moved to 1×ATR from the
+  price if already past it); opened-today adoptions are flattened at flat-by.
+- **Discord:** own room `#paperbot` (also `#paper-desk` / `#paper-bot`):
+  `DISCORD_WEBHOOK_PAPER` in `.env`, or a webhook on that channel + Sync from
+  Discord (the UI's sync does not create webhooks - add one in Discord first).
+- **Tests:** `pytest` (paper_* and test_paperbot cover whole days on a fake
+  clock with `tests/paper_fakes.FakeBroker`); `cd web && npm test` (tsx +
+  node:test for the reducer and feed text).
+- **Gotchas found while building it:**
+  - `os.kill(pid, 0)` on Windows terminates the process - `paper/lock.py`
+    uses `OpenProcess` there.
+  - `StockDataStream` spins the CPU while it has no subscriptions - the quote
+    thread only runs while there are symbols to watch.
+  - A swing setup is dated by its decision day, so `/state` shows each
+    run/symbol's latest setup (last 10 days), not only today's rows.
+  - After a dropped stream the UI reconnects from a fresh snapshot instead of
+    letting the browser resume with a stale `Last-Event-ID` (a restarted bot
+    or a replaced journal would otherwise swallow new events).
+  - SSE frames carry no `event:` field: one `onmessage`, `type` in the JSON.
+- **Not verified yet:** a real session against the Alpaca paper account
+  (reconcile, streams, the 16:20 pass, a fill). Checked against the real bot
+  loop + server on the fake broker in the browser.

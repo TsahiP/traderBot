@@ -1,6 +1,6 @@
 # Paper desk — live paper-trading bot + real-time UI
 
-Date: 2026-10-30 · Branch: `more-dedicated-and-finance` · Status: design, awaiting review
+Date: 2026-10-30 · Branch: `more-dedicated-and-finance` · Status: phase 1 built (see §14 for what changed while building it)
 
 ## 1. Goal
 
@@ -78,7 +78,11 @@ rules, so its results can be measured and compared over time.
 
 | File | Role |
 |---|---|
-| `paperbot.py` | Entry point: wiring, scheduler loop, lock file, startup reconcile |
+| `paperbot.py` | Entry point: wiring (broker, journal, bus, streams, server, Discord), lock file, the tick loop |
+| `paper/bot.py` | The loop: inbox (fills, quotes, commands), config reload, calendar jobs, heartbeat, `/state` snapshot |
+| `paper/broker.py` | The only alpaca-py import: plain-dict adapter, always `paper=True` |
+| `paper/reconcile.py` | Startup reconcile + adopted-position protection (§5.8) |
+| `paper/lock.py` | PID lock files shared with livebot |
 | `paper/config.py` | Load/validate `output/paperbot_config.json` (defaults written on first run), `config_hash` |
 | `paper/journal.py` | SQLite schema, migrations, typed insert/query helpers (WAL, `busy_timeout`) |
 | `paper/bus.py` | EventBus, SSE fan-out, replay from `Last-Event-ID` |
@@ -162,7 +166,7 @@ in addition to the global ones (both must pass).
 | Each bar close | Every enabled day run evaluates its symbols on the just-closed bar; setups move through the state machine; triggers go through the funnel |
 | 15:30 | No new entries (`no_entries_after`; −3h on NYSE early closes via `market_calendar`) |
 | 15:55 | `flat_by`: every day-run position (and today-opened adopted ones) → cancel legs + market exit |
-| 16:05 | Swing pass on the completed daily bar: signals → funnel → orders queued for the next open (submitted at `no_entries_before`, re-priced from the live quote; LLM has the night) |
+| close + 20 min (16:20) | Swing pass on the completed daily bar (the free feed has no SIP data from the last 15 min, so the bar is final only then): signals → funnel → orders queued for the next open (submitted at `no_entries_before`, re-priced from the live quote; LLM has the night) |
 | 16:10 | `day.summary` event (P&L, R, trades, blocked counts) → Discord |
 | Weekends / holidays | `market_calendar` says closed: heartbeat only, streams idle |
 
@@ -271,7 +275,7 @@ as in `confirmations`. Weights live in the config file.
 ### 5.6 LLM gate (`paper/llm_gate.py`)
 
 - The local model takes minutes, so it runs **ahead of the trigger**: when a
-  setup enters `WAITING` (day) or when the 16:05 swing pass finds a signal
+  setup enters `WAITING` (day) or when the 16:20 swing pass finds a signal
   (swing), a job is queued with the setup's data (bars, score components, SMC,
   news, planned stop/target) through the existing analyst pipeline
   (`analyst_steps`, `llm_client`). One worker thread, queue ordered by distance
@@ -374,7 +378,7 @@ heartbeat(id INTEGER PRIMARY KEY CHECK (id = 1), ts TEXT, pid INTEGER, paused IN
 |---|---|
 | `GET /health` | `{ok, pid, uptime}` |
 | `GET /state` | Full snapshot: heartbeat, account, positions (with plan, live price, P&L $/R), open orders, setups today, pending proposals, today's counters vs limits, config summary |
-| `GET /stream` | SSE. `id:` = event id. Honors `Last-Event-ID` (replays from SQLite), sends a `ping` comment every 15 s |
+| `GET /stream` | SSE. `id:` = event id, `data:` = the event JSON, no `event:` field (one `onmessage`, `type` in the JSON). Honors `Last-Event-ID` or `?after=` (replays from SQLite, no duplicates), sends a `ping` comment every 15 s |
 | `POST /commands` | `{kind, args}`; `kind` ∈ `pause`, `resume`, `flatten_all`, `close_position {symbol}`, `set_approval {mode: auto|manual}`, `approve {proposal_id}`, `reject {proposal_id}`. Returns `{command_id, status}`; the outcome also arrives as a `command` event |
 
 - Commands are validated, written to `commands`, then run on the main thread.
@@ -424,8 +428,9 @@ results, fills and stops. Existing Dashboard ledger also lists paper trades
 
 ## 9. Discord
 
-- New route `paper` (env `DISCORD_WEBHOOK_PAPER`, or a `paper-desk` channel via
-  the existing `discord_sync`), sent with `signals.dc_send`.
+- Its own room: route `paper` = env `DISCORD_WEBHOOK_PAPER`, or a webhook on a
+  `#paperbot` channel (also `#paper-desk` / `#paper-bot`) found by the existing
+  `discord_sync`; sent with `signals.dc_send`.
 - Event filter from config. Default: `proposal`, `fill`, `trade.closed`,
   `error`, `bot.offline`, `day.summary`. Fills/exits include an optional chart
   image (`chart_image.render_candles` with the risk/reward overlay).
@@ -441,7 +446,7 @@ results, fills and stops. Existing Dashboard ledger also lists paper trades
 | Market data late (bar not there yet) | Wait up to 60 s for the bar; then skip that bar with a `warn` |
 | LM Studio down | Verdict `error` → pending policy; banner in UI |
 | Bot crash / restart | Lock file + startup reconcile (§5.8); open brackets live at Alpaca meanwhile |
-| UI disconnected | SSE auto-reconnect with `Last-Event-ID`; no events lost |
+| UI disconnected | The hook closes the stream and reconnects from a fresh `/state`, then `/stream?after=` just before it (the last 50 events refill the feed) - safe across a bot restart |
 | Config invalid | Keep last good config, `error` event |
 | DB locked (dashboard reading) | WAL + `busy_timeout`; dashboard opens read-only (`mode=ro`) |
 
@@ -489,3 +494,22 @@ Each phase ends usable and tested.
 - `max_short_exposure_pct` 50, `approval_max_drift_pct` 0.3, scanner
   `max_add` 6.
 - `day_vwap` and `day_rsi` ship disabled until `day_orb` has run a week.
+
+## 14. Changes made while building phase 1
+
+- The approval switch and proposals moved into phase 1 (asked for).
+- Swing pass at close + 20 min instead of 16:05 (daily bar final on the free feed).
+- `or-mid` / `or-far` stops exist already (pure arithmetic); `structure` waits for phase 3.
+- Entries need a signal on the last completed bar (livebot also bought an old
+  unacted cross); exits on an opposite signal stay lenient.
+- The entry-window check uses the time the order will go out (`entry_at`),
+  so a 16:20 decision for the 09:45 window passes the window.
+- A queued entry that meets a paused bot, a passed window or a disabled run is
+  blocked / expired with the reason, never sent late; Approve only inside the
+  entry window with the market open.
+- `ENTERED -> BLOCKED` is allowed for an entry order that dies unfilled at Alpaca.
+- `/state` shows each run/symbol's latest setup (10-day window): a swing setup
+  is dated by its decision day.
+- The UI reconnects from scratch after a drop (see §10).
+- Discord: `#paperbot` is the room; the UI's Sync does not create webhooks.
+- Chart images on Discord fills/exits are not in phase 1 (text only).

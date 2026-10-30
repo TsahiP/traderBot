@@ -14,6 +14,13 @@
       "runtimeArgs": ["run", "dev", "--", "-p", "3001"],
       "cwd": "D:\\Tp\\tradebot\\web",
       "port": 3001
+    },
+    {
+      "name": "tradebot-paperbot",
+      "runtimeExecutable": "D:\\Tp\\tradebot\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["paperbot.py"],
+      "cwd": "D:\\Tp\\tradebot",
+      "port": 8100
     }
   ]
 }

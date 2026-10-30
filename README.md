@@ -88,6 +88,45 @@ python livebot.py
 
 Stop with `Ctrl+C`.
 
+### 2b. Paper desk (paperbot + live UI)
+
+```powershell
+python paperbot.py     # or .\start-web.ps1 -Paperbot
+```
+
+`paperbot.py` is the bigger paper trader, watched live in the **Paper desk**
+tab. Design: [docs/superpowers/specs/2026-10-30-paper-desk-design.md](docs/superpowers/specs/2026-10-30-paper-desk-design.md).
+
+- **Runs** (`output/paperbot_config.json`, re-read without a restart): each is
+  a strategy + timeframe + universe + its own risk budget. Phase 1 trades
+  `swing_sma` (today's livebot logic) on SPY; the day-trading and pattern runs
+  ship disabled until their phases land.
+- **Every entry goes through a funnel** - universe, one position per symbol,
+  trigger, exit plan, asset (shorts: easy to borrow only), size, run and
+  global risk limits, approval - and each stage is written to the journal
+  with its reason, so the UI shows exactly why a trade was taken or skipped.
+  Entries are re-checked on fresh numbers right before they are sent.
+- **Swing pass 20 minutes after the close** on the completed daily bar: exits
+  go out at once, entries are queued for the next session's window (09:45) -
+  a queued entry never fires late.
+- **"Ask before entering"**: a switch in the Paper desk. Off (default) the bot
+  enters on its own; on, every entry becomes a proposal with Approve / Reject
+  that expires at the end of the window or when the price drifts away.
+- **Long and short**, bracket orders at Alpaca (GTC for swing), positions the
+  bot does not know are adopted and protected (2xATR stop / 2R target OCO).
+- **Live**: Alpaca's order stream and IEX quotes; the bot serves `/state`,
+  `/stream` (Server-Sent Events) and `/commands` on `127.0.0.1:8100`.
+  Everything is journaled in `output/paperbot.db` (SQLite); `dashboard.py`
+  serves its history read-only when the bot is off.
+- **Discord** in its own room: create `#paperbot`, give it a webhook, then set
+  `DISCORD_WEBHOOK_PAPER` or run Sync from Discord. Entries, closed trades
+  (P&L and R), proposals, errors and start/stop are posted there.
+- **Pause** (no new entries, exits keep working), **Close** a position,
+  **Flatten all** - from the Paper desk.
+
+`livebot.py` and `paperbot.py` trade the same paper account, so each refuses
+to start while the other runs (lock files in `output/`).
+
 ## 3. Dashboard (Next.js UI)
 
 ```powershell
@@ -109,7 +148,13 @@ truth. Main areas:
 
 - **Dashboard** — sticky ticker tape (last close, SMAs, live signal), stat
   cards (account equity, position, realized P&L, win rate), equity curve
-  chart, and the trade ledger. Auto-refreshes every 30s.
+  chart, and the trade ledger (LIVE / PAPER / BACKTEST). Auto-refreshes every 30s.
+- **Paper desk** — paperbot live: status bar (online, market, streams, the
+  "Ask before entering" switch, Pause, Flatten all), metrics, proposals,
+  open positions with live P&L in $ and R and a stop-to-target bar, what each
+  run is waiting for, and a live feed of every decision, order and fill.
+  Connects to `NEXT_PUBLIC_PAPERBOT_URL` (default `http://127.0.0.1:8100`);
+  offline it shows the journal's history.
 - **Backtest lab** — run a backtest on **any ticker** (default SPY) with any
   SMA pair, quantity and capital. Renders candlesticks with SMA overlays,
   ▲ buy / ▼ sell markers where the logic fires, volume bars, metrics and the
@@ -128,8 +173,8 @@ truth. Main areas:
   Discord card.
 
 Works with or without Alpaca keys — without them the tape falls back to the
-latest backtest bar. Run `livebot.py` alongside and watch paper trades appear
-as the bot opens and closes them.
+latest backtest bar. Run `paperbot.py` (or `livebot.py`) alongside and watch
+paper trades appear as the bot opens and closes them.
 
 ## 4. Fundamentals + news bot (optional)
 

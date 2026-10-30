@@ -6,7 +6,8 @@ paper-desk webhook, so you know what happened while away from the screen.
   error, bot.offline, day.summary). `fill` posts entries only - an exit is
   the `trade.closed` message, with its P&L and R.
 - Where: `DISCORD_WEBHOOK_<ROUTE>` (DISCORD_WEBHOOK_PAPER) in .env, else the
-  route synced from a channel named `paper-desk` (Sync from Discord).
+  route synced from paperbot's own channel, `#paperbot` (also `#paper-desk`):
+  create it in Discord, then Sync from Discord creates the webhook.
 - Never in the way: the listener only enqueues; a worker thread sends with
   retries; a failure is logged, never raised. The same error text is posted
   at most once per ERROR_REPEAT_S.

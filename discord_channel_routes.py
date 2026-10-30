@@ -11,7 +11,7 @@ _TF = r"(?:1m|5m|15m|30m|1h|1d|1w)"
 _PREFixed = re.compile(rf"^(stock|crypto)[-_]({_TF})$")
 _TF_ONLY = re.compile(rf"^({_TF})$")
 _NEWS = re.compile(r"^(stock|crypto)[-_]news$")
-_PAPER = re.compile(r"^paper(-desk)?$")    # paperbot notifications (paper/notify.py), not a signal room
+_PAPER = re.compile(r"^paper(bot|-bot|-desk)?$")    # paperbot's own room (paper/notify.py), not a signal room
 
 
 def _slug(text: str) -> str:
