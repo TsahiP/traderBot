@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT, decision_id INTEGER, run_id TEXT, symbol TEXT,
     side TEXT, qty REAL, entry_ts TEXT, entry_price REAL, stop REAL, target REAL,
     exit_ts TEXT, exit_price REAL, exit_reason TEXT, pnl REAL, r REAL, mae_r REAL, mfe_r REAL,
-    score REAL, llm_mode TEXT, llm_verdict TEXT, adopted INTEGER, config_hash TEXT);
+    score REAL, llm_mode TEXT, llm_verdict TEXT, adopted INTEGER, flat_by TEXT, config_hash TEXT);
 CREATE INDEX IF NOT EXISTS trades_exit_ts ON trades(exit_ts);
 CREATE TABLE IF NOT EXISTS commands (
     id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, source TEXT, kind TEXT,
@@ -69,7 +69,7 @@ _BOOL = {"llm_would_block", "adopted", "paused"}
 _ORDER_COLS = ("parent_id", "decision_id", "trade_id", "kind", "side", "symbol", "qty", "type",
                "tif", "status", "limit_price", "stop_price", "filled_qty", "filled_avg",
                "submitted_at", "updated_at")
-_TRADE_UPDATABLE = ("qty", "stop", "target", "mae_r", "mfe_r", "score", "llm_verdict")
+_TRADE_UPDATABLE = ("qty", "stop", "target", "mae_r", "mfe_r", "score", "llm_verdict", "flat_by")
 _DECISION_UPDATABLE = ("outcome", "failed_stage", "score", "qty", "max_loss", "stages", "plan",
                        "llm_verdict", "llm_would_block")
 
@@ -288,18 +288,43 @@ class Journal:
                              tuple(statuses))
         return self._all("SELECT * FROM orders ORDER BY submitted_at, alpaca_id")
 
+    def orders_matching(self, *, symbol: str | None = None, decision_id: int | None = None,
+                        trade_id: int | None = None, since: str | None = None) -> list[dict]:
+        """Orders by any of: symbol (submitted at/after `since`), decision, trade."""
+        where, params = [], []
+        if symbol:
+            clause = "symbol = ?"
+            params.append(symbol)
+            if since:
+                clause += " AND submitted_at >= ?"
+                params.append(since)
+            where.append(f"({clause})")
+        if decision_id is not None:
+            where.append("decision_id = ?")
+            params.append(decision_id)
+        if trade_id is not None:
+            where.append("trade_id = ?")
+            params.append(trade_id)
+        if not where:
+            return []
+        return self._all(f"SELECT * FROM orders WHERE {' OR '.join(where)} ORDER BY submitted_at, alpaca_id",
+                         tuple(params))
+
     # ------------------------------------------------------------ trades
 
     def open_trade(self, *, run_id: str, symbol: str, side: str, qty: float, entry_ts: str,
                    entry_price: float, stop: float | None, target: float | None,
                    config_hash: str | None = None, decision_id: int | None = None,
                    score: float | None = None, llm_mode: str | None = None,
-                   llm_verdict: str | None = None, adopted: bool = False) -> int:
+                   llm_verdict: str | None = None, adopted: bool = False,
+                   flat_by: str | None = None) -> int:
+        """`flat_by` (HH:MM NY) = exit at that time today, win or lose (day trades)."""
         cur = self._write(
             "INSERT INTO trades (decision_id, run_id, symbol, side, qty, entry_ts, entry_price, stop, target,"
-            " score, llm_mode, llm_verdict, adopted, config_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " score, llm_mode, llm_verdict, adopted, flat_by, config_hash)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (decision_id, run_id, symbol, side, qty, entry_ts, entry_price, stop, target, score,
-             llm_mode, llm_verdict, int(adopted), config_hash),
+             llm_mode, llm_verdict, int(adopted), flat_by, config_hash),
         )
         return cur.lastrowid
 

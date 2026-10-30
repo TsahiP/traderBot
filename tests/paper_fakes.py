@@ -75,6 +75,7 @@ class FakeBroker:
         self._ids = itertools.count(1)
         self._fail: dict[str, Exception] = {}
         self.auto_fill_market = False
+        self.opened_today: set[tuple[str, str]] = set()      # (symbol, "buy" | "sell")
         self.calls: list[tuple] = []
 
     # ------------------------------------------------------------ test controls
@@ -175,6 +176,10 @@ class FakeBroker:
             if o["id"] == order_id:
                 return o
         raise KeyError(order_id)
+
+    def filled_today(self, symbol: str, side: str, now) -> bool:
+        self._check("filled_today", symbol, side)
+        return (symbol, side) in self.opened_today
 
     def asset(self, symbol: str) -> dict:
         self._check("asset", symbol)

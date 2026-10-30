@@ -205,3 +205,20 @@ def test_daily_bars_drop_the_bar_in_progress():
     out = pbroker.bars_frame(raw, "SPY", NOW)
     assert list(out.columns) == ["Open", "High", "Low", "Close", "Volume"]
     assert [d.day for d in out.index] == [28, 29]
+
+
+def test_filled_today_looks_at_todays_closed_orders():
+    class Trading:
+        def __init__(self):
+            self.req = None
+
+        def get_orders(self, filter):
+            self.req = filter
+            return [_alpaca_order(side=OrderSide.SELL, filled_qty="0"),
+                    _alpaca_order(side=OrderSide.BUY, filled_qty="10")]
+
+    t = Trading()
+    b = Broker(t, None)
+    assert b.filled_today("SPY", "buy", NOW) is True
+    assert b.filled_today("SPY", "sell", NOW) is False
+    assert t.req.after == NOW.replace(hour=0, minute=0) and t.req.symbols == ["SPY"]

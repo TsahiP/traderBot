@@ -109,6 +109,17 @@ def test_order_upsert_merges_fields(j):
         j.upsert_order("o3", colour="red")
 
 
+def test_orders_matching(j):
+    j.upsert_order("e1", kind="entry", symbol="SPY", decision_id=3, submitted_at="2026-10-30T09:45:00-04:00")
+    j.upsert_order("x1", kind="signal", symbol="SPY", submitted_at="2026-10-31T09:45:00-04:00")
+    j.upsert_order("p1", kind="protective", symbol="QQQ", trade_id=9, submitted_at="2026-10-30T09:00:00-04:00")
+    j.upsert_order("old", kind="manual", symbol="SPY", submitted_at="2026-10-01T09:45:00-04:00")
+    got = j.orders_matching(symbol="SPY", since="2026-10-30T00:00:00-04:00", trade_id=9)
+    assert [o["alpaca_id"] for o in got] == ["p1", "e1", "x1"]
+    assert [o["alpaca_id"] for o in j.orders_matching(decision_id=3)] == ["e1"]
+    assert j.orders_matching() == []
+
+
 def test_long_trade_pnl_and_r(j):
     tid = _trade(j)
     assert [t["id"] for t in j.open_trades()] == [tid]
@@ -129,10 +140,11 @@ def test_short_trade_pnl_and_r(j):
 
 
 def test_trade_without_a_stop_has_no_r_and_updates_merge(j):
-    tid = _trade(j, stop=None, target=None, adopted=True)
+    tid = _trade(j, stop=None, target=None, adopted=True, flat_by="15:55")
     j.update_trade(tid, stop=96.0, mae_r=-0.4)
     row = j.trade(tid)
     assert row["stop"] == 96.0 and row["adopted"] is True and row["mae_r"] == -0.4
+    assert row["flat_by"] == "15:55"
     closed = j.close_trade(_trade(j, stop=None, target=None), exit_ts=TS, exit_price=101.0,
                            exit_reason="broker")
     assert closed["pnl"] == 10.0 and closed["r"] is None

@@ -51,6 +51,19 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
 
+def record_order(journal, order: dict, kind: str, *, decision_id: int | None = None,
+                 trade_id: int | None = None) -> None:
+    """Write a broker order dict to the journal under `kind` (entry, stop, target,
+    protective, or the exit reason)."""
+    journal.upsert_order(
+        order["id"], parent_id=order.get("parent_id"), decision_id=decision_id, trade_id=trade_id,
+        kind=kind, side=order["side"], symbol=order["symbol"], qty=order["qty"], type=order["type"],
+        tif=order["tif"], status=order["status"], limit_price=order.get("limit_price"),
+        stop_price=order.get("stop_price"), filled_qty=order.get("filled_qty"),
+        filled_avg=order.get("filled_avg"), submitted_at=order.get("submitted_at"),
+    )
+
+
 class Executor:
     def __init__(self, broker, journal, bus, sleep=time.sleep,
                  cancel_tries: int = CANCEL_TRIES, cancel_wait_s: float = CANCEL_WAIT_S):
@@ -128,13 +141,7 @@ class Executor:
         return SendResult(True, decision, did, order=order)
 
     def _store_order(self, order: dict, kind: str, decision_id: int | None = None) -> None:
-        self.journal.upsert_order(
-            order["id"], parent_id=order.get("parent_id"), decision_id=decision_id, kind=kind,
-            side=order["side"], symbol=order["symbol"], qty=order["qty"], type=order["type"],
-            tif=order["tif"], status=order["status"], limit_price=order.get("limit_price"),
-            stop_price=order.get("stop_price"), filled_qty=order.get("filled_qty"),
-            filled_avg=order.get("filled_avg"), submitted_at=order.get("submitted_at"),
-        )
+        record_order(self.journal, order, kind, decision_id=decision_id)
 
     # ------------------------------------------------------------ proposals
 

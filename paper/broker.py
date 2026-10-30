@@ -193,6 +193,17 @@ class Broker:
 
         return normalize_order(self.trading.get_order_by_id(order_id, filter=GetOrderByIdRequest(nested=True)))
 
+    def filled_today(self, symbol: str, side: str, now: datetime) -> bool:
+        """Did an order on `side` (buy / sell) for `symbol` fill today (NY)?
+        Tells an adopted position opened today (flattened at flat-by) from an older one."""
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+
+        midnight = now.astimezone(NY).replace(hour=0, minute=0, second=0, microsecond=0)
+        req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, symbols=[symbol], after=midnight, nested=False)
+        return any(_val(o.side) == side and float(o.filled_qty or 0) > 0
+                   for o in self.trading.get_orders(filter=req))
+
     def asset(self, symbol: str) -> dict:
         a = self.trading.get_asset(symbol)
         return {"symbol": a.symbol, "tradable": bool(a.tradable), "shortable": bool(a.shortable),
