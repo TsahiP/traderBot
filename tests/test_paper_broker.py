@@ -205,6 +205,7 @@ def test_daily_bars_drop_the_bar_in_progress():
     out = pbroker.bars_frame(raw, "SPY", NOW)
     assert list(out.columns) == ["Open", "High", "Low", "Close", "Volume"]
     assert [d.day for d in out.index] == [28, 29]
+    assert len(pbroker.bars_frame(raw, "SPY", NOW, keep_today=True)) == 3
 
 
 def test_filled_today_looks_at_todays_closed_orders():

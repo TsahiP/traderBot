@@ -47,6 +47,11 @@ def test_manual_approval_path():
     assert transition(s, S.BLOCKED, sentence="rejected in the UI").state is S.BLOCKED
 
 
+def test_an_entry_that_never_filled_can_be_blocked():
+    s = new_setup("swing_sma", "SPY", "2026-10-30", S.ENTERED)
+    assert transition(s, S.BLOCKED, sentence="entry order canceled at Alpaca").state is S.BLOCKED
+
+
 def test_a_state_can_update_its_own_details():
     s = new_setup("day_orb", "TSLA", "2026-10-30", S.WAITING, level=362.18, distance_pct=-0.3)
     s2 = transition(s, S.WAITING, distance_pct=-0.1, sentence="$0.20 under 362.18")

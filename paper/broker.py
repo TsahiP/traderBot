@@ -103,16 +103,17 @@ def exit_legs(order: dict) -> dict:
     return out
 
 
-def bars_frame(raw: pd.DataFrame, symbol: str, now: datetime) -> pd.DataFrame:
+def bars_frame(raw: pd.DataFrame, symbol: str, now: datetime, keep_today: bool = False) -> pd.DataFrame:
     """Alpaca BarSet.df -> title-case OHLCV on a NY index, today's bar in
-    progress dropped (decisions only ever read completed bars)."""
+    progress dropped (decisions only ever read completed bars) unless
+    `keep_today` says the session is over and the bar is final."""
     df = raw
     if isinstance(df.index, pd.MultiIndex):
         df = df.xs(symbol, level="symbol")
     df = df.rename(columns=BAR_COLUMNS)[list(BAR_COLUMNS.values())]
     idx = pd.DatetimeIndex(df.index)
     df.index = idx.tz_localize("UTC").tz_convert(NY) if idx.tz is None else idx.tz_convert(NY)
-    if len(df) and df.index[-1].date() == now.date():
+    if not keep_today and len(df) and df.index[-1].date() == now.date():
         df = df.iloc[:-1]
     return df
 
@@ -222,7 +223,8 @@ class Broker:
             logger.warning("Latest trade for %s unavailable: %s", symbol, exc)
             return None
 
-    def daily_bars(self, symbol: str, now: datetime, days: int = 400) -> pd.DataFrame:
+    def daily_bars(self, symbol: str, now: datetime, days: int = 400, completed_today: bool = False) -> pd.DataFrame:
+        """Completed daily bars; `completed_today` keeps today's once the session is over."""
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
@@ -230,7 +232,7 @@ class Broker:
                                start=now - timedelta(days=days),
                                end=now - timedelta(minutes=16),  # free plan: no SIP for the last 15 min
                                limit=config.ALPACA_BARS_LIMIT)
-        return bars_frame(self.data.get_stock_bars(req).df, symbol, now)
+        return bars_frame(self.data.get_stock_bars(req).df, symbol, now, keep_today=completed_today)
 
     # ------------------------------------------------------------ orders
 

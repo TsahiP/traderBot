@@ -49,7 +49,7 @@ TRANSITIONS: dict[SetupState, frozenset] = {
     S.WAITING: frozenset({S.IDLE, S.ARMED, S.TRIGGERED, S.EXPIRED}),
     S.TRIGGERED: frozenset({S.PROPOSED, S.ENTERED, S.BLOCKED, S.EXPIRED}),
     S.PROPOSED: frozenset({S.ENTERED, S.EXPIRED, S.BLOCKED}),
-    S.ENTERED: frozenset({S.MANAGING, S.EXITED}),
+    S.ENTERED: frozenset({S.MANAGING, S.EXITED, S.BLOCKED}),   # BLOCKED: the entry order died unfilled
     S.MANAGING: frozenset({S.EXITED}),
     S.EXITED: frozenset(),
     S.EXPIRED: frozenset(),

@@ -69,7 +69,8 @@ _BOOL = {"llm_would_block", "adopted", "paused"}
 _ORDER_COLS = ("parent_id", "decision_id", "trade_id", "kind", "side", "symbol", "qty", "type",
                "tif", "status", "limit_price", "stop_price", "filled_qty", "filled_avg",
                "submitted_at", "updated_at")
-_TRADE_UPDATABLE = ("qty", "stop", "target", "mae_r", "mfe_r", "score", "llm_verdict", "flat_by")
+_TRADE_UPDATABLE = ("qty", "entry_price", "stop", "target", "mae_r", "mfe_r", "score", "llm_verdict",
+                    "flat_by")
 _DECISION_UPDATABLE = ("outcome", "failed_stage", "score", "qty", "max_loss", "stages", "plan",
                        "llm_verdict", "llm_would_block")
 
@@ -178,6 +179,9 @@ class Journal:
     def events_since(self, after_id: int, limit: int = 500) -> list[dict]:
         return self._all("SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?", (after_id, limit))
 
+    def last_event(self, type: str) -> dict | None:
+        return self._one("SELECT * FROM events WHERE type = ? ORDER BY id DESC LIMIT 1", (type,))
+
     def last_event_id(self) -> int:
         with self._lock:
             return self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
@@ -205,6 +209,14 @@ class Journal:
     def get_setup(self, run_id: str, symbol: str, day: str) -> dict | None:
         return self._one("SELECT * FROM setups WHERE run_id = ? AND symbol = ? AND day = ?",
                          (run_id, symbol, day))
+
+    def latest_setup(self, run_id: str, symbol: str) -> dict | None:
+        """The most recent day's setup for a run and symbol (swing setups span days)."""
+        return self._one("SELECT * FROM setups WHERE run_id = ? AND symbol = ? ORDER BY day DESC LIMIT 1",
+                         (run_id, symbol))
+
+    def setups_in_state(self, state: str) -> list[dict]:
+        return self._all("SELECT * FROM setups WHERE state = ? ORDER BY day, run_id, symbol", (state,))
 
     def setups(self, day: str) -> list[dict]:
         return self._all("SELECT * FROM setups WHERE day = ? ORDER BY run_id, symbol", (day,))
@@ -259,10 +271,14 @@ class Journal:
                              (day, limit))
         return self._all("SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,))
 
-    def entries_today(self, day: str) -> list[dict]:
-        """Rows for `risk.check_entry`: every entry placed on `day` with its max loss."""
-        return self._all("SELECT symbol, max_loss FROM decisions WHERE outcome = 'entered'"
-                         " AND substr(ts, 1, 10) = ? ORDER BY id", (day,))
+    def entries_today(self, day: str, run_id: str | None = None) -> list[dict]:
+        """Rows for `risk.check_entry`: every entry placed on `day` (one run's, or all) with its max loss."""
+        sql = "SELECT symbol, max_loss FROM decisions WHERE outcome = 'entered' AND substr(ts, 1, 10) = ?"
+        params: tuple = (day,)
+        if run_id:
+            sql += " AND run_id = ?"
+            params += (run_id,)
+        return self._all(sql + " ORDER BY id", params)
 
     # ------------------------------------------------------------ orders
 

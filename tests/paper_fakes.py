@@ -230,6 +230,35 @@ class FakeBroker:
         self._check("latest_price", symbol)
         return self.prices.get(symbol)
 
-    def daily_bars(self, symbol: str, now, days: int = 400) -> pd.DataFrame:
+    def daily_bars(self, symbol: str, now, days: int = 400, completed_today: bool = False) -> pd.DataFrame:
         self._check("daily_bars", symbol)
         return self.bars[symbol]
+
+
+def cross_bars(direction: str, last_day: str) -> pd.DataFrame:
+    """Daily bars whose SMA 10/50 crosses (up or down) on the bar dated `last_day`."""
+    from strategy import compute_signals
+
+    if direction == "up":
+        close = np.r_[np.linspace(110, 100, 70), np.linspace(101, 120, 10)]
+    else:
+        close = np.r_[np.linspace(100, 110, 70), np.linspace(109, 90, 10)]
+    df = pd.DataFrame({"Open": close, "High": close + 1, "Low": close - 1, "Close": close,
+                       "Volume": np.full(len(close), 1e6)})
+    sig = compute_signals(df, 10, 50)["signal"].to_numpy()
+    df = df.iloc[: int(np.flatnonzero(sig != 0)[-1]) + 1]
+    df.index = pd.bdate_range(end=last_day, periods=len(df), tz=NY)
+    return df
+
+
+class FakeQuotes:
+    """QuoteStreamThread stand-in: remembers the symbols it was asked to watch."""
+
+    def __init__(self):
+        self.symbols: set[str] = set()
+
+    def set_symbols(self, symbols) -> None:
+        self.symbols = set(symbols)
+
+    def health(self) -> str:
+        return "up" if self.symbols else "idle"

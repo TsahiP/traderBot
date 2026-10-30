@@ -59,6 +59,20 @@ def test_setup_upsert_keeps_one_row_per_run_symbol_day(j):
     assert j.get_setup("day_orb", "TSLA", "2026-10-31") is None
 
 
+def test_latest_setup_states_and_last_event(j):
+    j.upsert_setup("swing_sma", "SPY", "2026-10-29", "TRIGGERED", detail={"queued": {"x": 1}})
+    j.upsert_setup("swing_sma", "SPY", "2026-10-30", "MANAGING")
+    j.upsert_setup("swing_sma", "QQQ", "2026-10-29", "TRIGGERED")
+    assert j.latest_setup("swing_sma", "SPY")["day"] == "2026-10-30"
+    assert j.latest_setup("swing_sma", "AMD") is None
+    assert [(s["symbol"], s["day"]) for s in j.setups_in_state("TRIGGERED")] == [("QQQ", "2026-10-29"),
+                                                                                 ("SPY", "2026-10-29")]
+    j.add_event("swing.pass", {"day": "2026-10-29"})
+    j.add_event("swing.pass", {"day": "2026-10-30"})
+    assert j.last_event("swing.pass")["payload"] == {"day": "2026-10-30"}
+    assert j.last_event("nope") is None
+
+
 def test_decisions_and_entries_today(j):
     stages = [{"stage": "risk", "status": "pass"}]
     entered = j.add_decision(ts=TS, run_id="swing_sma", symbol="SPY", side="long", outcome="entered",
@@ -72,6 +86,7 @@ def test_decisions_and_entries_today(j):
     j.add_decision(ts="2026-10-29T10:00:00-04:00", run_id="swing_sma", symbol="MSFT", side="long",
                    outcome="entered", qty=1, max_loss=9.0, stages=[], config_hash="abc")
     assert j.entries_today("2026-10-30") == [{"symbol": "SPY", "max_loss": 50.0}]
+    assert j.entries_today("2026-10-30", run_id="day_orb") == []
     j.set_decision_outcome(proposed, "entered")
     assert {e["symbol"] for e in j.entries_today("2026-10-30")} == {"SPY", "AAPL"}
     row = j.decision(entered)

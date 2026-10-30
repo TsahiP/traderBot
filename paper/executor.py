@@ -80,6 +80,10 @@ class Executor:
         """Re-check `intent` on `ctx` and send it now."""
         return self._execute(intent, ctx, now, config_hash, existing_id=None, announce_ready=True)
 
+    def record_decision(self, decision: Decision, intent: Intent, *, now: datetime, config_hash: str) -> int:
+        """Journal a decision that is not sent (a block at decision time)."""
+        return self._record(decision, intent, now, config_hash, decision.outcome, None)
+
     def _record(self, decision: Decision, intent: Intent, now: datetime, config_hash: str,
                 outcome: str, existing_id: int | None, failed_stage: str | None = None,
                 extra_plan: dict | None = None) -> int:
