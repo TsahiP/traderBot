@@ -16,12 +16,13 @@ import { fmtSignedUsd, fmtUsd, pnlClass } from "@/lib/format";
 import type { Trade } from "@/lib/schemas";
 
 function SourceBadge({ source }: { source: Trade["source"] }) {
+  const traded = source === "live" || source === "paper";
   return (
     <Badge
-      variant={source === "live" ? "default" : "secondary"}
+      variant={traded ? "default" : "secondary"}
       className={cn(
         "data-[slot=badge]:rounded-md",
-        source === "live" && "uppercase tracking-wider",
+        traded && "uppercase tracking-wider",
       )}
     >
       {source}

@@ -74,7 +74,7 @@ export default function Home() {
               <CardHeader>
                 <CardTitle className="text-sm">Trade ledger</CardTitle>
                 <CardDescription>
-                  Every closed round trip — paper bot trades tagged LIVE,
+                  Every closed round trip — livebot trades tagged LIVE, paperbot PAPER,
                   saved runs tagged BACKTEST
                 </CardDescription>
               </CardHeader>

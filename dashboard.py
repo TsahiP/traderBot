@@ -38,6 +38,8 @@ app = Flask(__name__)
 
 TRADES_FILE = config.OUTPUT_DIR / "live_trades.csv"
 TRADES_BT_FILE = config.OUTPUT_DIR / "trades.csv"
+PAPER_DB_PATH = config.PAPERBOT_DB_PATH      # paperbot's journal, opened read-only
+PAPER_ONLINE_S = 10                           # heartbeat younger than this = bot online
 EQUITY_FILE = config.OUTPUT_DIR / "equity_curve.csv"
 
 MAX_SERIES_BARS = 800
@@ -94,6 +96,43 @@ def load_backtest_trades() -> list[dict]:
             "source": "backtest",
         }
         for _, r in rows.iterrows()
+    ]
+
+
+def _paper_journal():
+    """Read-only view of paperbot.db, or None before the bot ever ran."""
+    from paper.journal import Journal
+
+    try:
+        return Journal(PAPER_DB_PATH, readonly=True)
+    except FileNotFoundError:
+        return None
+
+
+def load_paper_trades() -> list[dict]:
+    j = _paper_journal()
+    if j is None:
+        return []
+    try:
+        rows = j.trades(closed=True)
+    finally:
+        j.close()
+    return [
+        {
+            "entry_date": fmt_ts(r["entry_ts"]),
+            "entry_price": float(r["entry_price"]),
+            "exit_date": fmt_ts(r["exit_ts"]),
+            "exit_price": float(r["exit_price"]),
+            "qty": int(round(r["qty"])),
+            "pnl": float(r["pnl"]),
+            "source": "paper",
+            "symbol": r["symbol"],
+            "side": r["side"],
+            "r": r["r"],
+            "exit_reason": r["exit_reason"],
+            "run_id": r["run_id"],
+        }
+        for r in rows
     ]
 
 
@@ -273,7 +312,7 @@ def api_stats():
 
 @app.route("/api/trades")
 def api_trades():
-    trades = load_live_trades() + load_backtest_trades()
+    trades = load_live_trades() + load_paper_trades() + load_backtest_trades()
     trades.sort(key=lambda t: t["exit_date"], reverse=True)
     return jsonify({"trades": trades})
 
@@ -309,6 +348,75 @@ def api_live():
                 "fallback": "backtest",
             })
     return jsonify(snap)
+
+
+# ---- Paper desk (read-only; the live bot serves its own /state and /stream on :8100) ----
+
+def _paper_read(fn, empty):
+    j = _paper_journal()
+    if j is None:
+        return jsonify(empty)
+    try:
+        return jsonify(fn(j))
+    finally:
+        j.close()
+
+
+def _paper_online(heartbeat: dict | None) -> bool:
+    if not heartbeat or not heartbeat.get("ts"):
+        return False
+    try:
+        age = (datetime.now(NY) - datetime.fromisoformat(heartbeat["ts"])).total_seconds()
+    except ValueError:
+        return False
+    return age < PAPER_ONLINE_S
+
+
+@app.route("/api/paper/state")
+def api_paper_state():
+    def build(j):
+        day = datetime.now(NY).date().isoformat()
+        hb = j.read_heartbeat()
+        entries = j.entries_today(day)
+        return {
+            "online": _paper_online(hb), "empty": False, "heartbeat": hb,
+            "open_trades": j.open_trades(),
+            "proposals": j.decisions_by_outcome("proposed"),
+            "setups": j.setups(day),
+            "counters": {"entries_today": len(entries),
+                         "daily_loss_used": round(sum(e["max_loss"] or 0.0 for e in entries), 2)},
+            "last_event_id": j.last_event_id(),
+        }
+
+    return _paper_read(build, {"online": False, "empty": True})
+
+
+@app.route("/api/paper/trades")
+def api_paper_trades():
+    run_id = request.args.get("run_id") or None
+    return _paper_read(lambda j: {"trades": j.trades(run_id=run_id, closed=True)}, {"trades": []})
+
+
+@app.route("/api/paper/decisions")
+def api_paper_decisions():
+    day = request.args.get("day") or None
+    return _paper_read(lambda j: {"decisions": j.decisions(day=day)}, {"decisions": []})
+
+
+@app.route("/api/paper/events")
+def api_paper_events():
+    try:
+        after = int(request.args.get("after", 0))
+        limit = min(int(request.args.get("limit", 500)), 2000)
+    except ValueError:
+        return jsonify({"error": "after and limit must be numbers"}), 400
+    return _paper_read(lambda j: {"events": j.events_since(after, limit=limit)}, {"events": []})
+
+
+@app.route("/api/paper/equity")
+def api_paper_equity():
+    since = request.args.get("since") or None
+    return _paper_read(lambda j: {"equity": j.equity(since=since)}, {"equity": []})
 
 
 @app.route("/api/strategies")

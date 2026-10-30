@@ -64,7 +64,7 @@ export const Trade = z.object({
   exit_price: z.number(),
   qty: z.number().int(),
   pnl: z.number(),
-  source: z.enum(["live", "backtest"]),
+  source: z.enum(["live", "paper", "backtest"]),
 });
 export type Trade = z.infer<typeof Trade>;
 
