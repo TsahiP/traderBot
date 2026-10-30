@@ -221,3 +221,53 @@ def test_size_zero_blocks_with_reason(env, monkeypatch):
     state = livebot.load_state()
     assert livebot.run_cycle(trading, None, state, NOW) == "blocked"
     assert state["last_block"].startswith("BLOCK: size: 0 shares fit (limited by max_loss)")
+
+
+# ---------------------------------------------------------------- account lock (vs paperbot)
+
+@pytest.fixture
+def locks(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "LIVEBOT_LOCK_PATH", tmp_path / "livebot.lock")
+    monkeypatch.setattr(config, "PAPERBOT_LOCK_PATH", tmp_path / "paperbot.lock")
+    monkeypatch.setattr(livebot, "load_state", lambda: {"open_trade": None, "entries": [],
+                                                        "acted_signal_bar": None, "last_block": None})
+
+    def no_sleep(seconds):
+        raise AssertionError("main() reached its poll sleep - the cycle failed")
+
+    monkeypatch.setattr(livebot, "time", NS(sleep=no_sleep))
+    return tmp_path
+
+
+def test_main_refuses_while_paperbot_runs(locks, monkeypatch):
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (locks / "paperbot.lock").write_text(str(child.pid))
+        monkeypatch.setattr(livebot, "get_clients", lambda: pytest.fail("must not connect"))
+        with pytest.raises(SystemExit) as exc:
+            livebot.main()
+        assert "paperbot" in str(exc.value) or "other bot" in str(exc.value)
+        assert not (locks / "livebot.lock").exists()
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_main_holds_its_lock_and_releases_it(locks, monkeypatch):
+    import os
+
+    seen = {}
+
+    def one_cycle(trading, data, state, now):
+        seen["lock"] = (locks / "livebot.lock").read_text()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(livebot, "get_clients", lambda: (FakeTrading(), None))
+    monkeypatch.setattr(livebot, "run_cycle", one_cycle)
+    with pytest.raises(KeyboardInterrupt):
+        livebot.main()
+    assert seen["lock"] == str(os.getpid())
+    assert not (locks / "livebot.lock").exists()

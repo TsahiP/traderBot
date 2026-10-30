@@ -429,19 +429,27 @@ def run_cycle(trading, data, state: dict, now: datetime) -> str:
 
 
 def main() -> None:
-    trading, data = get_clients()
-    logger.info("Starting paper bot for %s (SMA %s/%s, qty %s, stop %sx ATR, target %sR)",
-                config.SYMBOL, config.SMA_FAST, config.SMA_SLOW, config.QUANTITY,
-                config.STOP_ATR_MULT, config.TARGET_R)
-    state = load_state()
+    from paper import lock  # paperbot trades the same paper account: never both at once
 
-    while True:
-        try:
-            if run_cycle(trading, data, state, datetime.now(NY)) == "closed":
-                logger.info("Market closed - sleeping %s min", config.POLL_INTERVAL_MIN)
-        except Exception as exc:
-            logger.exception("Loop error: %s", exc)
-        time.sleep(config.POLL_INTERVAL_MIN * 60)
+    ok, reason = lock.acquire(config.LIVEBOT_LOCK_PATH, other=config.PAPERBOT_LOCK_PATH)
+    if not ok:
+        sys.exit(f"livebot not started: {reason.replace('the other bot', 'paperbot')}")
+    try:
+        trading, data = get_clients()
+        logger.info("Starting paper bot for %s (SMA %s/%s, qty %s, stop %sx ATR, target %sR)",
+                    config.SYMBOL, config.SMA_FAST, config.SMA_SLOW, config.QUANTITY,
+                    config.STOP_ATR_MULT, config.TARGET_R)
+        state = load_state()
+
+        while True:
+            try:
+                if run_cycle(trading, data, state, datetime.now(NY)) == "closed":
+                    logger.info("Market closed - sleeping %s min", config.POLL_INTERVAL_MIN)
+            except Exception as exc:
+                logger.exception("Loop error: %s", exc)
+            time.sleep(config.POLL_INTERVAL_MIN * 60)
+    finally:
+        lock.release(config.LIVEBOT_LOCK_PATH)
 
 
 if __name__ == "__main__":
