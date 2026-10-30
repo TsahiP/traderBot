@@ -472,11 +472,11 @@ Each phase ends usable and tested.
 
 1. **Foundation** — `paper/` package, config, journal, bus, server + SSE,
    executor, streams, reconcile/adoption, lock file, `swing_sma` run ported,
-   risk side-aware. UI: status bar, metrics, positions, feed, Pause / Flatten /
-   Close. Discord notifier.
+   risk side-aware, **approval switch + proposals**. UI: status bar, metrics,
+   proposals, positions, feed, Pause / Flatten / Close. Discord notifier.
 2. **Day trading** — entry timer (ORB, strategy kind), exit plan, flat-by,
-   universe + scanner pass, Time Machine stage, shorts end to end, manual
-   approval switch + proposals UI, "Waiting for" panel.
+   universe + scanner pass, Time Machine stage, shorts end to end,
+   "Waiting for" panel.
 3. **Intelligence** — confluence score, news/fundamentals stage,
    `swing_patterns` run, LLM gate (off/shadow/veto) with pre-emptive queue.
 4. **Analysis** — detail view with chart, Journal & stats, LLM comparison,
