@@ -138,6 +138,19 @@ def test_read_all_news_merged(monkeypatch, tmp_path):
     assert rows[0]["symbol"] == "AAPL"  # newest first
 
 
+def test_read_all_news_dedupes_same_story_across_symbols(monkeypatch, tmp_path):
+    now = _now_dt()
+    shared = {"id": "same-story", "title": "Shared story", "url": "https://ex.com/shared"}
+    for sym, ts in (("AAPL", now.isoformat()), ("MSFT", (now - timedelta(hours=1)).isoformat())):
+        config.NEWS_DIR.joinpath(f"{sym}.json").write_text(json.dumps(
+            {"symbol": sym, "updated": now.isoformat(),
+             "items": [{**shared, "symbol": sym, "ts": ts}]},
+        ), encoding="utf-8")
+    rows = nc.read_all_news(limit=10)
+    assert [r["id"] for r in rows] == ["same-story"]
+    assert rows[0]["symbol"] == "AAPL"  # newest copy wins
+
+
 def test_sec_8k_items_tagged_and_recent_only():
     now = datetime(2026, 10, 27, 12, 0, tzinfo=nc.NY)
     data = {"filings": {"recent": {

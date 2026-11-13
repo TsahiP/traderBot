@@ -1,7 +1,9 @@
 """Read a news article from its link and summarize it with the local LLM (LM Studio).
 
-fundabot calls summary_message(item) per story; None means "send the plain
-headline message instead" (blocked page, too little text, LLM down or error).
+fundabot calls summary_message(item) per story and only sends stories that come
+back with a summary. None means the LLM failed; fundabot keeps the story queued
+for the next pass. An unreadable article (blocked page, too little text, SEC
+filing) is summarized from its headline and provider blurb instead.
 
 Link handling:
   - Finnhub / publisher links: plain GET, redirects followed.
@@ -152,12 +154,19 @@ def summarize_article(item: dict, text: str) -> str | None:
     return out[:MAX_SUMMARY_CHARS]
 
 
+def headline_text(item: dict) -> str:
+    """What the model reads when the article itself can't be fetched."""
+    blurb = (item.get("summary") or "").strip()
+    return f"Headline and provider blurb only (article not readable):\n{item['title']}\n{blurb}".rstrip()
+
+
 def summary_message(item: dict) -> str | None:
-    """Discord message with an LLM summary of the article, or None to use the plain one."""
-    text = fetch_article_text(item["url"])
-    if not text:
-        return None
+    """Discord message with an LLM summary in Hebrew, or None when the LLM failed."""
+    text = fetch_article_text(item["url"]) or headline_text(item)
     summary = summarize_article(item, text)
     if not summary:
         return None
-    return f"**{item['symbol']}**\n{summary}\n{item['url']}"
+    # RLM at the start of each line keeps Discord laying it out right-to-left,
+    # even when the model opens a line with a Latin word or ticker.
+    body = "\n".join("‏" + line for line in summary.splitlines() if line.strip())
+    return f"**{item['symbol']}**\n{body}\n{item['url']}"

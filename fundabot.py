@@ -7,9 +7,10 @@ the Signals tab edits — no restart needed):
   - Fundamentals: one snapshot refresh per NY trading day (after 16:10 ET) plus
     a catch-up refresh of stale snapshots at boot. Provider free-tier quotas are
     tracked in output/funda_state.json and shared with the dashboard.
-  - News: polls every NEWS_POLL_HOURS across free providers and pushes stories
-    to the stock_news / crypto_news Discord channels, deduped across polls and
-    providers (cold start drains the cached backlog in batches).
+  - News: polled on NY weekdays an hour before the open (08:30), hourly while the
+    market is open (pushes only stories not sent yet) and just after the close
+    (16:05); pushed to the stock_news / crypto_news Discord channels, deduped
+    across polls and providers (cold start drains the cached backlog in batches).
   - Fundi analyst digest: once per NY day (same 16:10 ET window) each symbol
     gets ONE message with its full fundamentals snapshot plus its latest news.
 
@@ -43,6 +44,12 @@ logger.addHandler(_handler)
 WAKE_SECONDS = 60
 FUNDA_AFTER_HOUR = 16        # NY hour after the close
 FUNDA_AFTER_MIN = 10
+
+NEWS_PREOPEN = (8, 30)       # NY time, an hour before the 09:30 open
+NEWS_OPEN = (9, 30)
+NEWS_CLOSE = (16, 0)
+NEWS_POSTCLOSE = (16, 5)
+NEWS_INTRADAY_MINUTES = 60
 
 STATE_LOCK = threading.Lock()
 
@@ -121,6 +128,25 @@ def update_crypto_snapshots(cryptos: list[str]) -> None:
             logger.warning("crypto snapshot %s failed: %s", symbol, exc)
 
 
+def next_news_time(now: datetime) -> datetime:
+    """Next news slot after `now`: pre-open, hourly while open, post-close; weekdays only."""
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    for _ in range(8):
+        if day.weekday() < 5:
+            slots = [day.replace(hour=NEWS_PREOPEN[0], minute=NEWS_PREOPEN[1])]
+            t = day.replace(hour=NEWS_OPEN[0], minute=NEWS_OPEN[1])
+            close = day.replace(hour=NEWS_CLOSE[0], minute=NEWS_CLOSE[1])
+            while t < close:
+                slots.append(t)
+                t += timedelta(minutes=NEWS_INTRADAY_MINUTES)
+            slots.append(day.replace(hour=NEWS_POSTCLOSE[0], minute=NEWS_POSTCLOSE[1]))
+            for slot in slots:
+                if slot > now:
+                    return slot
+        day += timedelta(days=1)
+    return now + timedelta(hours=4)
+
+
 def push_news_pass(stocks: list[str], cryptos: list[str], passes: dict) -> None:
     """Poll providers, push all cached-but-unsent items, then mark them sent.
 
@@ -133,9 +159,11 @@ def push_news_pass(stocks: list[str], cryptos: list[str], passes: dict) -> None:
     pushed_total = 0
     pushed_ids: list[str] = []
     sent = news_client.sent_ids()
-    summarize = config.NEWS_LLM_SUMMARY and news_summary.llm_up()
-    if config.NEWS_LLM_SUMMARY and not summarize:
-        logger.warning("LM Studio not reachable — pushing plain headlines this pass")
+    # With summaries on, nothing goes out without one: when LM Studio is down the
+    # queue waits for the next pass instead of falling back to English headlines.
+    hold = config.NEWS_LLM_SUMMARY and not news_summary.llm_up()
+    if hold:
+        logger.warning("LM Studio not reachable — holding news until the next pass")
 
     for group, symbols in (("stocks", stocks), ("crypto", cryptos)):
         route = routes[group]
@@ -153,9 +181,15 @@ def push_news_pass(stocks: list[str], cryptos: list[str], passes: dict) -> None:
                 continue
             logger.info("news queue %s: %d item(s) to push", symbol, len(due))
             for item in due:
-                if pushed_total >= config.NEWS_MAX_PER_POLL:
+                if hold or pushed_total >= config.NEWS_MAX_PER_POLL:
                     break
-                text = (news_summary.summary_message(item) if summarize else None) or news_client.push_text(item)
+                if config.NEWS_LLM_SUMMARY:
+                    text = news_summary.summary_message(item)
+                    if not text:
+                        logger.warning("news summary failed %s id=%s — held for next pass", symbol, item["id"])
+                        continue
+                else:
+                    text = news_client.push_text(item)
                 ok = signals.dc_send(webhook, text=text, suppress_embeds=True)
                 if not ok:
                     logger.warning("discord push failed %s id=%s (not marked sent)", symbol, item["id"])
@@ -171,9 +205,7 @@ def push_news_pass(stocks: list[str], cryptos: list[str], passes: dict) -> None:
     else:
         logger.info("news poll: no new items to push")
 
-    passes["next_news"] = (
-        datetime.now(NY) + timedelta(hours=float(config.NEWS_POLL_HOURS))
-    ).isoformat(timespec="seconds")
+    passes["next_news"] = next_news_time(datetime.now(NY)).isoformat(timespec="seconds")
     _save_pass_state(passes)
 
 

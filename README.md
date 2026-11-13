@@ -127,6 +127,16 @@ tab. Design: [docs/superpowers/specs/2026-10-30-paper-desk-design.md](docs/super
 `livebot.py` and `paperbot.py` trade the same paper account, so each refuses
 to start while the other runs (lock files in `output/`).
 
+### Day skill tab
+
+The **Day skill** tab follows the day-trader skill and does not change the
+paper desk. The scanner runs first: once each New York day it tags the US
+list (20-day breakout, bull flag, reclaim of the 20-day average, oversold,
+oversold bounce). After 9:50 it checks only those names for a long
+opening-range breakout. Stop at the midpoint, target 2R, flat by 15:55.
+A row that passes is sent on its own. Orders are in `output/skill_orders.json`;
+the day's scan is cached in `output/skill_daily.json`.
+
 ## 3. Dashboard (Next.js UI)
 
 ```powershell
@@ -254,7 +264,9 @@ Requirements:
 
 - **LM Studio** listening at `LLM_BASE_URL` (default `http://127.0.0.1:1234/v1`)
   with the model from `LLM_MODEL` loaded (`analystbot` strips reasoning tags
-  if the model thinks out loud).
+  if the model thinks out loud). `LLM_IDLE_TTL_S` (default `1800`) is sent on
+  every load and, after that many seconds with no analysis from the dashboard,
+  fundabot, or analystbot, the client unloads that model.
 - A bot invite with **View Channels, Send Messages, Manage Channels, Manage
   Roles** (needed to lock the room by denying @everyone Send Messages) and
   **Manage Messages** (pin the menu). The token comes from

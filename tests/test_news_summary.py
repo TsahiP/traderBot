@@ -75,13 +75,23 @@ def test_summary_message_is_symbol_hebrew_summary_and_link_only(monkeypatch):
     summary = "• נקודה\nהשפעה: חיובית על NVDA — צמיחה"
     monkeypatch.setattr(ns, "llm_chat_ex", lambda *a, **k: (summary, {"finish_reason": "stop"}))
     msg = ns.summary_message(_item(tags=["earnings"]))
-    assert msg == f"**NVDA**\n{summary}\nhttps://ex.com/a"
+    assert msg == "**NVDA**\n‏• נקודה\n‏השפעה: חיובית על NVDA — צמיחה\nhttps://ex.com/a"
     assert "Nvidia jumps" not in msg and "Yahoo" not in msg  # no English headline/source
 
 
-def test_summary_message_none_when_article_unreadable(monkeypatch):
+def test_summary_message_falls_back_to_headline_when_article_unreadable(monkeypatch):
     monkeypatch.setattr(ns, "fetch_article_text", lambda url: "")
-    assert ns.summary_message(_item()) is None
+    seen = {}
+
+    def fake(msgs, **kw):
+        seen["user"] = msgs[1]["content"]
+        return "• כותרת בלבד", {"finish_reason": "stop"}
+
+    monkeypatch.setattr(ns, "llm_chat_ex", fake)
+    msg = ns.summary_message(_item(summary="Blurb from the provider"))
+    assert "Nvidia jumps" in seen["user"] and "Blurb from the provider" in seen["user"]
+    assert "article not readable" in seen["user"]
+    assert msg.startswith("**NVDA**\n‏• כותרת בלבד")
 
 
 def test_summary_message_none_when_llm_fails_or_truncated(monkeypatch):

@@ -1,12 +1,13 @@
 "use client";
 
-import { Activity, FlaskConical, LayoutDashboard, Newspaper, Radar, ScanSearch } from "lucide-react";
+import { Activity, FlaskConical, LayoutDashboard, Newspaper, Radar, ScanSearch, Timer } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { SignalsPanel } from "@/components/signals/signals-panel";
 import { FundiPanel } from "@/components/fundi/fundi-panel";
 import { ScannerPanel } from "@/components/scanner/scanner-panel";
+import { SkillPanel } from "@/components/skill/skill-panel";
 import { PaperPanel } from "@/components/paper/paper-panel";
 import { TickerTape } from "@/components/ticker-tape";
 import { StatCards } from "@/components/stat-cards";
@@ -56,6 +57,10 @@ export default function Home() {
             <TabsTrigger value="scanner" className="gap-1.5">
               <ScanSearch data-icon="inline-start" />
               Scanner
+            </TabsTrigger>
+            <TabsTrigger value="skill" className="gap-1.5">
+              <Timer data-icon="inline-start" />
+              Day skill
             </TabsTrigger>
           </TabsList>
 
@@ -177,6 +182,10 @@ export default function Home() {
 
           <TabsContent value="scanner" className="flex flex-col gap-4">
             <ScannerPanel />
+          </TabsContent>
+
+          <TabsContent value="skill" className="flex flex-col gap-4">
+            <SkillPanel />
           </TabsContent>
         </Tabs>
       </main>

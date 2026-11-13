@@ -97,6 +97,7 @@ tradebot/
 ├── timemachine.py     # Monte Carlo replay of the rest of a session from 60d of 5m bars: replay() odds/avg R/history/verdict, format_line()
 ├── market_levels.py   # relative_strength(df, bench) vs SPY; volume_profile(df) POC + value area (volume spread by overlap)
 ├── scanner.py         # setup scanner: Nasdaq Trader universe, daily setups (20d breakout, bull flag, MA20 reclaim, oversold, bounce), ORB; output/scan_results.json
+├── skill_board.py     # Day skill tab: daily US scan first (`output/skill_daily.json`), then opening-range entries only on those names. A PASS row is sent as a day bracket (`skill-SYMBOL-date`). Flat-by sells only those names. Orders: `output/skill_orders.json`
 ├── tradebot_mcp.py    # MCP server (mcp SDK 2.x MCPServer, stdio): 12 read-only tools over the engine — never places orders
 ├── risk.py            # pure entry gate: check_entry() -> PASS/BLOCK with reasons (stop, loss, R:R, daily loss, trades/day, duplicate, NY window, position cap, cash buffer)
 ├── signalbot.py       # signal bot loop: poll yfinance or Bybit per config, detect patterns, optional confluence gate, alert Telegram (text + chart PNG)
@@ -114,7 +115,7 @@ tradebot/
 ├── discord_channel_routes.py  # Discord channel/category name → canonical route (stock_1h, …)
 ├── discord_sync.py    # guild channel scan → output/discord_webhooks.json
 ├── chart_image.py     # render_candles() — dark-theme PNG: candles + alert bar highlight + long/short entry/stop/target overlay
-├── llm_client.py      # local LM Studio (OpenAI-compatible) chat helper: strip reasoning tags, trim context, vision_user_message() for image inputs
+├── llm_client.py      # local LM Studio chat helper: strip reasoning tags, vision parts, load with LLM_IDLE_TTL_S (default 1800s) and unload that model after a shared idle stamp (`output/llm_activity.json`)
 ├── analystbot.py      # Discord analyst room: locked fundi-analyst channel + pinned ticker select + position modal -> gather -> LLM -> chunked posts + chart files
 ├── dashboard.py       # Flask API (see §7 for endpoints)
 ├── start-web.ps1      # launches API + frontend + browser
@@ -222,6 +223,8 @@ if you regenerate the file differently.
 | `GET /api/timemachine` | `symbol entry stop target` + optional `side` (long/short) `runs` (100–20000) `seed` (19) `at` (`YYYY-MM-DD HH:MM` NY) | `timemachine.replay()` dict; `400` for crypto, bad levels, < 20 full sessions |
 | `GET /api/scanner` | — | `{results \| null, running, started, error}` |
 | `POST /api/scanner/run` | JSON `{mode: daily\|orb, scope: watchlists\|universe}` | `202` and runs in a thread; `409` while one runs |
+| `GET /api/skill` | — | `{running, error, account_error, board}` for the Day skill tab. `board` is null until a scan. `scan` is `daily` (setups only, before the range is ready) or `orb` (those names' opening-range state). Entries are sent only from `orb` rows that pass |
+| `POST /api/skill/run` | — | `202` starts a watchlist check; `409` if one is already running. Every `PASS` row is sent as a day bracket during the check. The API also checks about every 5 minutes while the NYSE session is open |
 | `POST /api/signals/test` | — | sends a plain "test" message to Telegram so you can verify the keys; `{ok}` or `502` with the API error |
 | `POST /api/signals/discord-test` | JSON `{route: stock_1m\|…\|crypto_news}` (legacy aliases `day`, `hour`, `minute`, `week` → stock routes) | test message to resolved webhook (env, then synced file); `{ok}` or `400`/`502` |
 | `GET /api/signals/discord-sync` | — | last sync snapshot (no Discord API call): `{synced_at?, routes{route→channel_name}, unmatched_channels[], conflicts[]}` |

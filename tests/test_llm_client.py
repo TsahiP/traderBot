@@ -99,6 +99,8 @@ def test_llm_chat_posts_and_strips(monkeypatch):
 
     monkeypatch.setattr(req_mod, "post", fake_post)
     monkeypatch.setattr(lc.config, "LLM_MODEL", "qwen/qwen3.8-27b")
+    monkeypatch.setattr(lc, "_start_idle_watcher", lambda: None)
+    monkeypatch.setattr(lc, "_touch_activity", lambda model: None)
     out = lc.llm_chat([{"role": "user", "content": "hi"}], temperature=0.2, max_tokens=10)
     assert out == "## Verdict"
     assert posted["url"].endswith("/chat/completions")
@@ -125,6 +127,8 @@ def test_llm_chat_ex_meta(monkeypatch):
             return j
 
     monkeypatch.setattr(lc, "_post", lambda url, json=None, timeout=None: (j["choices"][0]["message"], j["choices"][0], j["usage"]))
+    monkeypatch.setattr(lc, "_start_idle_watcher", lambda: None)
+    monkeypatch.setattr(lc, "_touch_activity", lambda model: None)
     content, meta = lc.llm_chat_ex([{"role": "user", "content": "hi"}], max_tokens=42)
     assert content == ""
     assert meta["finish_reason"] == "length"
@@ -163,6 +167,7 @@ def test_ensure_model_loaded(monkeypatch):
     monkeypatch.setattr(req_mod, "post", fake_post)
     monkeypatch.setattr(req_mod, "get", fake_get)
     monkeypatch.setattr(lc.config, "LLM_BASE_URL", "http://127.0.0.1:1234/v1")
+    monkeypatch.setattr(lc.config, "LLM_IDLE_TTL_S", 1800)
 
     # resident under an instance-suffixed id -> no reload POST
     assert lc._model_is_loaded("target") is True
@@ -174,7 +179,7 @@ def test_ensure_model_loaded(monkeypatch):
     assert lc.ensure_model_loaded("target") is True
     url, payload, tmo = posts[-1]
     assert url == "http://127.0.0.1:1234/api/v1/models/load"
-    assert payload == {"model": "target"}
+    assert payload == {"model": "target", "ttl": 1800}
 
     # unknown model id -> load attempted
     posts.clear()
@@ -204,6 +209,50 @@ def test_ensure_model_loaded(monkeypatch):
     monkeypatch.setattr(req_mod, "get", lambda *a, **k: _Resp(404, {}))
     assert lc.ensure_model_loaded("target") is True
     assert posts 
+
+
+def test_unload_if_idle(monkeypatch, tmp_path):
+    stamp = tmp_path / "llm_activity.json"
+    monkeypatch.setattr(lc, "_activity_path", lambda: stamp)
+    monkeypatch.setattr(lc.config, "LLM_BASE_URL", "http://127.0.0.1:1234/v1")
+    monkeypatch.setattr(lc.config, "LLM_IDLE_TTL_S", 1800)
+    lc._inflight = 0
+    posts = []
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"models": [
+                {"key": "other", "loaded_instances": [{"id": "other"}]},
+                {"key": "target", "loaded_instances": [{"id": "target"}]},
+            ]}
+
+    import requests as req_mod
+
+    monkeypatch.setattr(req_mod, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(req_mod, "post", lambda url, json=None, timeout=None: posts.append((url, json)) or _Resp())
+
+    stamp.write_text(json.dumps({"ts": 1_000.0, "model": "target"}), encoding="utf-8")
+    assert lc.unload_if_idle(now=1_000.0 + 1800) is True
+    assert posts == [("http://127.0.0.1:1234/api/v1/models/unload", {"instance_id": "target"})]
+
+    posts.clear()
+    assert lc.unload_if_idle(now=1_000.0 + 1799) is False
+    assert posts == []
+
+    lc._inflight = 1
+    try:
+        assert lc.unload_if_idle(now=1_000.0 + 9999) is False
+    finally:
+        lc._inflight = 0
+    assert posts == []
+
+    monkeypatch.setattr(lc.config, "LLM_IDLE_TTL_S", 0)
+    assert lc.unload_if_idle(now=1_000.0 + 9999) is False
 
 
 def test_json_roundtrip_of_context():

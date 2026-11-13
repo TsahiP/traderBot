@@ -140,27 +140,84 @@ def daily_setups(df: pd.DataFrame) -> list[str]:
     return hits
 
 
-def orb_breakout(df5: pd.DataFrame, or_minutes: int = OR_MINUTES, now: datetime | None = None) -> dict | None:
-    """First completed 5m bar after the opening range that closes above its high."""
-    if df5 is None or df5.empty:
-        return None
+def _completed_session(df5: pd.DataFrame, now: datetime) -> pd.DataFrame:
+    """Today's 5-minute bars that have already closed. Yesterday's session is dropped."""
     idx = pd.DatetimeIndex(df5.index)
     df5 = df5.copy()
     df5.index = idx.tz_localize(market_calendar.NY) if idx.tz is None else idx.tz_convert(market_calendar.NY)
-    now = (now or datetime.now(market_calendar.NY)).astimezone(market_calendar.NY)
-    day = now.date()  # today only: yfinance returns yesterday's session before the open
+    day = now.date()
     session = df5[(df5.index.date == day) & (df5.index.time >= time(9, 30))]
-    session = session[session.index + timedelta(minutes=5) <= now]   # completed bars only
+    return session[session.index + timedelta(minutes=5) <= now]
+
+
+def orb_state(
+    df5: pd.DataFrame | None,
+    or_minutes: int = OR_MINUTES,
+    now: datetime | None = None,
+    min_volume_x: float = 0.0,
+    no_entries_after: str = "15:30",
+) -> dict:
+    """Long-only opening-range state for one chart.
+
+    A trigger is the first completed bar after the range that CLOSES above the
+    range high (a wick does not count). `min_volume_x` also requires that bar's
+    volume versus the range bars' average. Status is forming, waiting,
+    triggered, expired, or no_data.
+    """
+    now = (now or datetime.now(market_calendar.NY)).astimezone(market_calendar.NY)
+    empty = {"range_high": None, "range_low": None, "last_close": None, "entry": None, "trigger_at": None}
+    if df5 is None or df5.empty:
+        return {"status": "no_data", "sentence": "no bars", **empty}
+    session = _completed_session(df5, now)
+    if session.empty:
+        return {"status": "no_data", "sentence": "no completed bars from today's session yet", **empty}
+    day = now.date()
     or_end = datetime.combine(day, time(9, 30), market_calendar.NY) + timedelta(minutes=or_minutes)
     rng = session[session.index < or_end]
-    if len(rng) < or_minutes // 5:
-        return None
+    need = max(or_minutes // 5, 1)
+    last_close = round(float(session["Close"].iloc[-1]), 2)
+    if len(rng) < need:
+        return {"status": "forming", "sentence": f"opening range still forming ({len(rng)} of {need} bars)",
+                **empty, "last_close": last_close}
     hi, lo = float(rng["High"].max()), float(rng["Low"].min())
+    avg_vol = float(rng["Volume"].mean() or 0)
     for ts, bar in session[session.index >= or_end].iterrows():
-        if float(bar["Close"]) > hi:
-            return {"at": (ts + timedelta(minutes=5)).strftime("%H:%M"), "close": round(float(bar["Close"]), 2),
-                    "range_high": round(hi, 2), "range_low": round(lo, 2)}
-    return None
+        close = float(bar["Close"])
+        if close <= hi:
+            continue
+        if min_volume_x and avg_vol and float(bar["Volume"]) < min_volume_x * avg_vol:
+            continue
+        at = (ts + timedelta(minutes=5)).strftime("%H:%M")
+        over = (close - hi) / hi * 100
+        return {
+            "status": "triggered",
+            "sentence": f"triggered {at} at ${close:.2f} ({over:.2f}% over the range high ${hi:.2f})",
+            "range_high": round(hi, 2), "range_low": round(lo, 2), "last_close": last_close,
+            "entry": round(close, 2), "trigger_at": at,
+        }
+    hh, mm = (int(x) for x in no_entries_after.split(":"))
+    cutoff = datetime.combine(day, time(hh, mm), market_calendar.NY)
+    if day in market_calendar.early_closes(day.year):
+        cutoff -= timedelta(hours=3)
+    under = (hi - last_close) / hi * 100 if hi else 0
+    if now >= cutoff:
+        return {"status": "expired",
+                "sentence": f"no close above ${hi:.2f} before {cutoff:%H:%M}",
+                "range_high": round(hi, 2), "range_low": round(lo, 2), "last_close": last_close,
+                "entry": None, "trigger_at": None}
+    return {"status": "waiting",
+            "sentence": f"last close ${last_close:.2f} is {under:.2f}% under the range high ${hi:.2f}",
+            "range_high": round(hi, 2), "range_low": round(lo, 2), "last_close": last_close,
+            "entry": None, "trigger_at": None}
+
+
+def orb_breakout(df5: pd.DataFrame, or_minutes: int = OR_MINUTES, now: datetime | None = None) -> dict | None:
+    """First completed 5m bar after the opening range that closes above its high."""
+    state = orb_state(df5, or_minutes=or_minutes, now=now)
+    if state["status"] != "triggered":
+        return None
+    return {"at": state["trigger_at"], "close": state["entry"],
+            "range_high": state["range_high"], "range_low": state["range_low"]}
 
 
 def orb_not_ready(now: datetime, or_minutes: int = OR_MINUTES) -> str | None:

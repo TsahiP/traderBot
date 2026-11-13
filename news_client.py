@@ -471,7 +471,18 @@ def read_all_news(symbol: str | None = None, limit: int = 60) -> list[dict]:
         except (json.JSONDecodeError, OSError):
             continue
     rows.sort(key=lambda x: x.get("ts", ""), reverse=True)
-    return rows[:limit]
+    # One story can sit in several symbol caches (same URL, tagged to two tickers);
+    # keep the newest copy so the feed never lists an id twice.
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for row in rows:
+        if row.get("id") in seen:
+            continue
+        seen.add(row.get("id"))
+        unique.append(row)
+        if len(unique) >= limit:
+            break
+    return unique
 
 
 def push_text(item: dict) -> str:

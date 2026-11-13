@@ -1,22 +1,32 @@
 """Local LM Studio client (OpenAI-compatible server), shared by the dashboard + analyst bot.
 
 Env: LLM_BASE_URL (default http://127.0.0.1:1234/v1), LLM_MODEL (empty = auto-pick
-the best chat model from /v1/models). Reasoning models may wrap their thinking in
-thought tags - those are stripped from every reply.
+the best chat model from /v1/models), LLM_IDLE_TTL_S (default 1800). A load sends
+that TTL to LM Studio, and every process that chats also unloads the model once
+the shared last-use stamp is older than the TTL. Reasoning models may wrap their
+thinking in thought tags - those are stripped from every reply.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import threading
+import time
 
 import config
+
+logger = logging.getLogger("llm_client")
 
 _TAG = "thought"
 _THINK_RE = re.compile(rf"<{_TAG}>.*?(?:</{_TAG}>|\Z)", re.DOTALL)
 
 _model_lock = threading.Lock()
 _model_cache: str | None = None
+_activity_lock = threading.Lock()
+_inflight = 0
+_watcher_started = False
 
 
 def reset_model_cache() -> None:
@@ -119,12 +129,144 @@ def _model_is_loaded(model: str) -> bool | None:
     return False  # model unknown to the server - safe to attempt a load
 
 
+def _activity_path():
+    return config.OUTPUT_DIR / "llm_activity.json"
+
+
+def _touch_activity(model: str) -> None:
+    """Shared last-use stamp so dashboard, fundabot and analystbot share one idle clock."""
+    path = _activity_path()
+    payload = json.dumps({"ts": time.time(), "model": model})
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        logger.warning("could not stamp LLM activity: %s", exc)
+
+
+def _read_activity() -> tuple[float, str] | None:
+    try:
+        data = json.loads(_activity_path().read_text(encoding="utf-8"))
+        return float(data["ts"]), str(data["model"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _instance_ids(model: str) -> list[str]:
+    """Loaded native instance ids for this model key. Empty when none, or the list failed."""
+    import requests
+
+    base = model.split(":", 1)[0]
+    try:
+        r = requests.get(f"{_server_root()}/api/v1/models", timeout=10)
+        r.raise_for_status()
+        rows = r.json().get("models", [])
+    except (requests.RequestException, ValueError):
+        return []
+    ids: list[str] = []
+    for row in rows:
+        key = str(row.get("key") or "")
+        for inst in row.get("loaded_instances") or []:
+            iid = str(inst.get("id") or "")
+            if not iid:
+                continue
+            names = {key, iid, key.split("@", 1)[0], iid.split(":", 1)[0]}
+            if base in names or model in names:
+                ids.append(iid)
+    return ids
+
+
+def unload_model(model: str) -> bool:
+    """Ask LM Studio to drop every resident instance of `model`. Best effort."""
+    import requests
+
+    ids = _instance_ids(model)
+    if not ids:
+        return False
+    ok = False
+    for iid in ids:
+        try:
+            r = requests.post(
+                f"{_server_root()}/api/v1/models/unload",
+                json={"instance_id": iid},
+                timeout=30,
+            )
+            ok = ok or r.status_code < 300
+        except requests.RequestException as exc:
+            logger.warning("unload %s failed: %s", iid, exc)
+    if ok:
+        logger.info("unloaded %s after %ss with no LLM work", model, config.LLM_IDLE_TTL_S)
+    return ok
+
+
+def unload_if_idle(now: float | None = None) -> bool:
+    """Unload when the shared stamp is older than LLM_IDLE_TTL_S and nothing is in flight here."""
+    ttl = config.LLM_IDLE_TTL_S
+    if ttl <= 0:
+        return False
+    now = time.time() if now is None else now
+    with _activity_lock:
+        if _inflight:
+            return False
+    stamp = _read_activity()
+    if stamp is None:
+        return False
+    ts, model = stamp
+    if now - ts < ttl:
+        return False
+    return unload_model(model)
+
+
+def _idle_loop() -> None:
+    while True:
+        time.sleep(30)
+        try:
+            with _activity_lock:
+                busy = _inflight > 0
+                model = _read_activity()
+            if busy and model is not None:
+                _touch_activity(model[1])  # a long call must not look idle to the other processes
+                continue
+            unload_if_idle()
+        except Exception:
+            logger.exception("llm idle check failed")
+
+
+def _start_idle_watcher() -> None:
+    global _watcher_started
+    if config.LLM_IDLE_TTL_S <= 0:
+        return
+    with _activity_lock:
+        if _watcher_started:
+            return
+        _watcher_started = True
+    threading.Thread(target=_idle_loop, name="llm-idle-ttl", daemon=True).start()
+
+
+def _begin_work(model: str) -> None:
+    global _inflight
+    with _activity_lock:
+        _inflight += 1
+    _touch_activity(model)
+    _start_idle_watcher()
+
+
+def _end_work(model: str) -> None:
+    global _inflight
+    with _activity_lock:
+        _inflight = max(0, _inflight - 1)
+    _touch_activity(model)
+
+
 def ensure_model_loaded(model: str, *, timeout: int | None = None) -> bool:
     """Pre-load a model through the native API, but only when it is not resident.
 
     Re-loading an already-active model costs ~1-6 minutes of dead GPU time, so we
-    check first. Best effort in every case: JIT loading on the chat endpoint is
-    the fallback, and a hung load check is treated as "already fine".
+    check first. The load carries LLM_IDLE_TTL_S so LM Studio itself unloads it
+    after that much silence. Best effort in every case: JIT loading on the chat
+    endpoint is the fallback, and a hung load check is treated as "already fine".
     """
     import requests
 
@@ -134,10 +276,13 @@ def ensure_model_loaded(model: str, *, timeout: int | None = None) -> bool:
     if state is not False:
         # resident (or the server can't say) - never force a reload of a live model
         return bool(state)
+    body: dict = {"model": model}
+    if config.LLM_IDLE_TTL_S > 0:
+        body["ttl"] = config.LLM_IDLE_TTL_S
     try:
         r = requests.post(
             f"{_server_root()}/api/v1/models/load",
-            json={"model": model},
+            json=body,
             timeout=timeout,
         )
         return r.status_code < 300
@@ -164,6 +309,29 @@ def llm_chat_ex(
     empty and finish_reason is "length" - callers can escalate the budget.
     """
     model = model or resolve_llm_model()
+    _begin_work(model)
+    try:
+        return _llm_chat_ex(
+            model, messages,
+            temperature=temperature, max_tokens=max_tokens, timeout=timeout,
+            enable_thinking=enable_thinking, preload=preload,
+            reasoning_effort=reasoning_effort,
+        )
+    finally:
+        _end_work(model)
+
+
+def _llm_chat_ex(
+    model: str,
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+    timeout: int,
+    enable_thinking: bool | None,
+    preload: bool,
+    reasoning_effort: str | None,
+) -> tuple[str, dict]:
     if preload:
         ensure_model_loaded(model)
     body = {

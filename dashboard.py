@@ -1066,5 +1066,85 @@ def api_scanner_run():
     return jsonify({"started": True, "mode": mode, "scope": scope}), 202
 
 
+# ---- Day skill tab (opening-range path; does not change paperbot runs) ----
+_skill_lock = threading.Lock()
+_skill_state = {"running": False, "error": None, "board": None, "account_error": None}
+
+
+def _skill_worker() -> None:
+    import skill_board
+    from paper.broker import Broker, BrokerError
+
+    account = None
+    account_error = None
+    broker = None
+    try:
+        broker = Broker.from_env()
+        account = broker.account()
+    except BrokerError as exc:
+        account_error = str(exc)
+    except Exception as exc:  # noqa: BLE001 - a down broker still leaves the board readable
+        account_error = str(exc)[:200]
+    try:
+        board = skill_board.build_board(account=account)
+        with _skill_lock:
+            _skill_state.update(board=board, error=None, account_error=account_error)
+        if broker is not None:
+            skill_board.send_passes(broker, board=board)
+    except Exception as exc:  # noqa: BLE001
+        with _skill_lock:
+            _skill_state["error"] = str(exc)[:200]
+    finally:
+        with _skill_lock:
+            _skill_state["running"] = False
+
+
+def _skill_flat_loop() -> None:
+    import time
+
+    import market_calendar
+    import skill_board
+    from paper.broker import Broker, BrokerError
+
+    wakes = 0
+    while True:
+        time.sleep(30)
+        wakes += 1
+        try:
+            skill_board.flatten_due(Broker.from_env())
+        except BrokerError:
+            pass
+        except Exception:
+            import logging
+            logging.getLogger("dashboard").exception("skill flat-by failed")
+        if wakes % 10 != 1:
+            continue
+        now = datetime.now(NY)
+        if not market_calendar.is_open(now):
+            continue
+        with _skill_lock:
+            if _skill_state["running"]:
+                continue
+            _skill_state["running"] = True
+        _skill_worker()
+
+
+@app.route("/api/skill")
+def api_skill():
+    with _skill_lock:
+        return jsonify(dict(_skill_state))
+
+
+@app.route("/api/skill/run", methods=["POST"])
+def api_skill_run():
+    with _skill_lock:
+        if _skill_state["running"]:
+            return jsonify({"error": "the skill board is already checking"}), 409
+        _skill_state.update(running=True, error=None)
+    threading.Thread(target=_skill_worker, daemon=True).start()
+    return jsonify({"started": True}), 202
+
+
 if __name__ == "__main__":
+    threading.Thread(target=_skill_flat_loop, daemon=True).start()
     app.run(host="127.0.0.1", port=8000, debug=False)

@@ -57,6 +57,7 @@ PAPERBOT_PORT = int(os.getenv("PAPERBOT_PORT", "8100"))     # HTTP + SSE, bound 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "")  # empty = auto-pick a chat model from LM Studio
 LLM_LOAD_TIMEOUT = int(os.getenv("LLM_LOAD_TIMEOUT", "420"))  # seconds for native pre-load
+LLM_IDLE_TTL_S = int(os.getenv("LLM_IDLE_TTL_S", "900"))  # unload after this many idle seconds; 0 = stay loaded
 
 # ---- Discord analyst room (analystbot: select ticker -> LLM analysis) ----
 ANALYST_CHANNEL_NAME = os.getenv("DISCORD_ANALYST_CHANNEL", "fundi-analyst")
@@ -92,7 +93,6 @@ FUNDA_STATE_PATH = OUTPUT_DIR / "funda_state.json"       # provider quota ledger
 FUNDA_HEARTBEAT_PATH = OUTPUT_DIR / "funda_heartbeat.json"
 NEWS_SENT_PATH = OUTPUT_DIR / "news_sent.json"           # pushed-item hashes (Discord dedupe)
 FUNDA_TTL_HOURS = 20           # a snapshot is fresh for ~a trading day
-NEWS_POLL_HOURS = 4            # news fetch interval
 NEWS_MAX_PER_SYMBOL = 5        # new items pushed to Discord per poll per symbol
 NEWS_MAX_PER_POLL = 25         # hard cap of pushes per poll
 NEWS_LLM_SUMMARY = os.getenv("NEWS_LLM_SUMMARY", "1").strip() not in ("0", "false", "False", "off")  # fundabot: read each article + summarize via LM Studio
