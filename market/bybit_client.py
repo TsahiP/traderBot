@@ -14,7 +14,7 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-import config
+import core.config as config
 
 _BASE = "https://api.bybit.com"
 _KLINE_PATH = "/v5/market/kline"
@@ -123,7 +123,7 @@ def fetch_klines(
     The forming candle is dropped: Bybit includes it, and its close time
     is still in the future.
     """
-    from market_symbols import to_bybit_spot_symbol
+    from market.market_symbols import to_bybit_spot_symbol
 
     if timeframe not in _INTERVALS:
         raise BybitError(f"Unsupported Bybit timeframe '{timeframe}'")

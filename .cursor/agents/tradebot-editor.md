@@ -16,7 +16,7 @@ Do not contradict HANDSOFF on technical facts (single source of truth: `engine.r
 ## How to implement changes
 
 - **Minimize scope** — smallest correct diff; match existing naming, patterns, and file roles listed in HANDSOFF §4.
-- **Backend:** Python 3.12, Flask in `dashboard.py`, strategies in `strategies.py` / `engine.py`, live in `livebot.py`, signals in `signalbot.py` + `signals.py`.
+- **Backend:** Python 3.12, Flask in `dashboard.py`, strategies in `core/strategies.py` + `core/engine.py`, live in `livebot.py`, signals in `signalbot.py` + `signaling/signals.py`. Shared libraries live under `core/`, `market/`, `charts/`, `signaling/`, `integrations/`, `analyst/`, `tools/`, `paper/` (see HANDSOFF §4).
 - **Frontend:** Next.js App Router in `web/`, shadcn/ui conventions (gap not space-y, semantic tokens), hooks in `web/src/hooks/`, zod in `web/src/lib/schemas.ts`. Follow `.cursor/rules/`; update rules when conventions change.
 - **New strategy or API field:** update registry, Flask handler, zod/Lab schema, and HANDSOFF §5/§7/§10 as needed.
 - **Signals / Telegram / Discord:** follow `signals.py` and HANDSOFF §13; never commit secrets.
@@ -31,6 +31,7 @@ After **every** substantive code change, update docs in the same session — do 
 | New/changed API route, params, or errors | `HANDSOFF.md` §7; frontend schemas/hooks if applicable |
 | New env var or config knob | `README.md`, `HANDSOFF.md` §3 or §9, `.env.example` if present |
 | New file or moved module | `HANDSOFF.md` §4 layout tree |
+| Change to a package’s **role** or main entrypoints (`tools/`, `signaling/`, `paper/`, `market/`, `integrations/`) | That folder’s `README.md` (1–2 lines; keep in sync with HANDSOFF §4) |
 | Strategy/engine/signal behavior | `HANDSOFF.md` §5, §6, or §13 |
 | UI tabs, hooks, validation rules | `HANDSOFF.md` §8 |
 | User setup or "how to run" | `README.md`; `RUN.md` if step list changes |

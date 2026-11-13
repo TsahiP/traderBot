@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import config
+import core.config as config
 import livebot
 
 NY = ZoneInfo("America/New_York")

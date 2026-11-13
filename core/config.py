@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = BASE_DIR / "logs"
 OUTPUT_DIR = BASE_DIR / "output"
 

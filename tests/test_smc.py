@@ -1,7 +1,7 @@
 """LuxAlgo-style SMC engine, chart overlays and the analyst snapshot."""
 import pandas as pd
 
-from smc import _prune, clean_smc_flags, detect_smc, run_luxalgo, snapshot_smc
+from charts.smc import _prune, clean_smc_flags, detect_smc, run_luxalgo, snapshot_smc
 
 
 def _ohlc(rows: list[tuple[float, float, float, float]]) -> pd.DataFrame:

@@ -23,7 +23,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 import pandas as pd
 
-from engine import ATR_PERIOD, atr_series
+from core.engine import ATR_PERIOD, atr_series
 from paper.config import ConfigError, parse_stop_rule
 
 MIN_RISK_PCT = 0.05        # risk a share under this % of the entry is too tight

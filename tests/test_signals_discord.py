@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-import config
-import signals
+import core.config as config
+import signaling.signals as signals
 
 
 @pytest.fixture(autouse=True)

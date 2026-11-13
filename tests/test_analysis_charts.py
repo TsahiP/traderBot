@@ -4,7 +4,7 @@ import math
 import pandas as pd
 import pytest
 
-from analysis_charts import render_analysis_chart
+from charts.analysis_charts import render_analysis_chart
 
 
 def _sample_df(rows: int = 140) -> pd.DataFrame:

@@ -4,7 +4,7 @@ import math
 
 import pandas as pd
 
-import analyst_context as ac
+import analyst.analyst_context as ac
 
 
 def _bars(n=260, tf="d"):

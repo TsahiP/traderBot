@@ -24,7 +24,7 @@ import time
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 
-from market_symbols import is_valid_symbol, normalize_symbol
+from market.market_symbols import is_valid_symbol, normalize_symbol
 from paper.config import APPROVAL_MODES
 
 logger = logging.getLogger("paperbot")

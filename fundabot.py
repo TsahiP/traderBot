@@ -24,12 +24,12 @@ from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from zoneinfo import ZoneInfo
 
-import config
-import funda_client
-import news_client
-import news_summary
-import signals
-from market_symbols import is_bybit_crypto, normalize_symbol
+import core.config as config
+import integrations.funda_client as funda_client
+import integrations.news_client as news_client
+import integrations.news_summary as news_summary
+import signaling.signals as signals
+from market.market_symbols import is_bybit_crypto, normalize_symbol
 
 NY = ZoneInfo("America/New_York")
 

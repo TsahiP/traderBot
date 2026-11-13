@@ -8,9 +8,9 @@ from typing import Any
 
 import requests
 
-import config
-import signals
-from discord_channel_routes import parse_channel_route
+import core.config as config
+import signaling.signals as signals
+from integrations.discord_channel_routes import parse_channel_route
 
 DISCORD_API = "https://discord.com/api/v10"
 GUILD_TEXT = 0

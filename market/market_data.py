@@ -4,8 +4,8 @@ from typing import Literal
 
 import pandas as pd
 
-from bybit_client import fetch_klines
-from market_symbols import is_bybit_crypto, normalize_symbol
+from market.bybit_client import fetch_klines
+from market.market_symbols import is_bybit_crypto, normalize_symbol
 
 OhlcvSource = Literal["bybit", "yfinance"]
 

@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-import config
-import funda_client as fdc
+import core.config as config
+import integrations.funda_client as fdc
 
 
 @pytest.fixture(autouse=True)

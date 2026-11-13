@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-import llm_client as lc
+import integrations.llm_client as lc
 
 
 def test_resolve_prefers_config(monkeypatch):

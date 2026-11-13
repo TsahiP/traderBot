@@ -7,7 +7,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-from smc import SmcOverlay, detect_smc
+from charts.smc import SmcOverlay, detect_smc
 
 UP = "#26a69a"
 DOWN = "#ef5350"

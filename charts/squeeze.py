@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from confirmations import bollinger
+from charts.confirmations import bollinger
 
 BB_PERIOD = 20
 BB_STD = 2.0

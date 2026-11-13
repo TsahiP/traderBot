@@ -8,11 +8,11 @@ import sys
 
 import pandas as pd
 
-import config
-from bybit_client import BybitError
-from engine import compute_metrics, run_backtest
-from market_data import fetch_ohlcv
-from market_symbols import is_bybit_crypto, normalize_symbol
+import core.config as config
+from market.bybit_client import BybitError
+from core.engine import compute_metrics, run_backtest
+from market.market_data import fetch_ohlcv
+from market.market_symbols import is_bybit_crypto, normalize_symbol
 
 
 def download_data() -> pd.DataFrame:

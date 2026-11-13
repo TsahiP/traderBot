@@ -29,8 +29,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import market_calendar
-import risk
+import market.market_calendar as market_calendar
+import core.risk as risk
 from paper import config as pcfg
 from paper.broker import OPEN_STATUSES
 from paper.executor import Executor, ExecutorError, record_order

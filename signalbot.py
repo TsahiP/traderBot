@@ -14,16 +14,16 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from dotenv import load_dotenv
 
-import config
-import market_calendar
-import signal_outcomes
-import signals
-import timemachine
-from candle_patterns import PATTERNS, detect_all
-from chart_image import render_candles
-from confirmations import below_min, evaluate, failed_required, format_lines
-from market_data import fetch_ohlcv, fetch_ohlcv_period
-from market_symbols import is_bybit_crypto, normalize_symbol
+import core.config as config
+import market.market_calendar as market_calendar
+import signaling.signal_outcomes as signal_outcomes
+import signaling.signals as signals
+import tools.timemachine as timemachine
+from charts.candle_patterns import PATTERNS, detect_all
+from charts.chart_image import render_candles
+from charts.confirmations import below_min, evaluate, failed_required, format_lines
+from market.market_data import fetch_ohlcv, fetch_ohlcv_period
+from market.market_symbols import is_bybit_crypto, normalize_symbol
 
 load_dotenv(config.BASE_DIR / ".env")
 

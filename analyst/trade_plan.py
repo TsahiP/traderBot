@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 
-import risk
+import core.risk as risk
 
 DEFAULT_MAX_POSITION_PCT = 25.0  # position cap when an account size is given
 ATR_STOP_BUFFER = 0.25      # stop sits a quarter ATR under the level

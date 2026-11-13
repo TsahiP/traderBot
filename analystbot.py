@@ -30,10 +30,10 @@ import time
 from logging.handlers import RotatingFileHandler
 from zoneinfo import ZoneInfo
 
-import config
-import signals
-from analyst_context import format_reply, gather_symbol_data, run_analysis
-from market_symbols import is_bybit_crypto, is_valid_symbol
+import core.config as config
+import signaling.signals as signals
+from analyst.analyst_context import format_reply, gather_symbol_data, run_analysis
+from market.market_symbols import is_bybit_crypto, is_valid_symbol
 
 import discord
 from discord.ext import commands

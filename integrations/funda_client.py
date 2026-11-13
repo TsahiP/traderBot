@@ -24,7 +24,7 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import config
+import core.config as config
 
 NY = ZoneInfo("America/New_York")
 _STATE_LOCK = threading.Lock()

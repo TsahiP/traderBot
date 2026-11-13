@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-import squeeze as sq
+import charts.squeeze as sq
 
 
 def _df(closes, wick=0.0):

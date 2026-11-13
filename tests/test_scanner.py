@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import scanner
-from market_calendar import NY
+import tools.scanner as scanner
+from market.market_calendar import NY
 
 NASDAQ = """Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares
 AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N

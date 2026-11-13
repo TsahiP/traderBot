@@ -1,7 +1,7 @@
 """PNG chart rendering for signal alerts."""
 import pandas as pd
 
-from chart_image import render_candles
+from charts.chart_image import render_candles
 
 
 def _sample_df(rows: int = 12) -> pd.DataFrame:

@@ -26,8 +26,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import config
-from funda_client import (
+import core.config as config
+from integrations.funda_client import (
     NY,
     _atomic_write,
     _get_json,
@@ -141,7 +141,7 @@ def sec_8k_items_from_submissions(symbol: str, cik: int, data: dict, now: dateti
 
 
 def _sec_8k_items(symbol: str) -> list[dict]:
-    from funda_client import _edgar_cik
+    from integrations.funda_client import _edgar_cik
 
     cik = _edgar_cik(symbol)
     if not cik:

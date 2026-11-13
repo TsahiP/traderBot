@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-import config
+import core.config as config
 from paper import lock
 from paper.bot import Bot
 from paper.broker import Broker, BrokerError

@@ -25,8 +25,8 @@ from datetime import datetime
 
 import pandas as pd
 
-import market_calendar
-import risk
+import market.market_calendar as market_calendar
+import core.risk as risk
 from paper import exit_plan
 from paper.runs import Intent, Run
 

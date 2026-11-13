@@ -3,9 +3,9 @@ import json
 
 import pandas as pd
 
-import config
-import signal_outcomes
-import signals
+import core.config as config
+import signaling.signal_outcomes as signal_outcomes
+import signaling.signals as signals
 
 
 def _bars(rows):

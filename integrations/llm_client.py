@@ -15,7 +15,7 @@ import re
 import threading
 import time
 
-import config
+import core.config as config
 
 logger = logging.getLogger("llm_client")
 

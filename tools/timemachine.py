@@ -27,7 +27,7 @@ from datetime import datetime, time
 import numpy as np
 import pandas as pd
 
-from market_calendar import NY, early_closes, is_trading_day
+from market.market_calendar import NY, early_closes, is_trading_day
 
 SLOTS = 78                 # 5-min bars in a full 9:30-16:00 session
 MIN_SESSIONS = 20

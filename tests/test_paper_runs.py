@@ -6,7 +6,7 @@ import pytest
 from paper import config as pcfg
 from paper.runs import (IllegalTransition, Intent, Run, Setup, SetupState as S, evaluate_daily,
                         new_setup, runs_from_config, transition)
-from strategy import compute_signals
+from core.strategy import compute_signals
 
 NY = "America/New_York"
 

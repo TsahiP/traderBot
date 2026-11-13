@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import market_levels as ml
+import market.market_levels as ml
 
 
 def _daily(closes, start="2025-01-01", tz=None):

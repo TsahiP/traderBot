@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import risk
+import core.risk as risk
 
 NY = ZoneInfo("America/New_York")
 SCHEMA_VERSION = 1

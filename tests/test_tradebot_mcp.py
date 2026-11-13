@@ -42,7 +42,7 @@ def test_risk_check_sizes_and_gates():
 
 
 def test_last_scan_reads_results(monkeypatch, tmp_path):
-    import scanner
+    import tools.scanner as scanner
 
     path = tmp_path / "scan.json"
     path.write_text(json.dumps({"mode": "daily", "hits": [{"symbol": "KO"}]}), encoding="utf-8")

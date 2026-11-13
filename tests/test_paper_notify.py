@@ -2,7 +2,7 @@
 background, a missing webhook, and no error spam."""
 import time
 
-import discord_channel_routes as dcr
+import integrations.discord_channel_routes as dcr
 from paper import config as pcfg
 from paper.notify import DiscordNotifier, format_event, webhook_url
 
@@ -134,7 +134,7 @@ def test_webhook_url_resolution(monkeypatch, tmp_path):
     monkeypatch.setenv("DISCORD_WEBHOOK_PAPER", "https://env/hook")
     assert webhook_url("paper") == "https://env/hook"
     monkeypatch.delenv("DISCORD_WEBHOOK_PAPER")
-    import signals
+    import signaling.signals as signals
 
     monkeypatch.setattr(signals, "_webhook_url_from_sync_file", lambda route: f"https://synced/{route}")
     assert webhook_url("paper") == "https://synced/paper"

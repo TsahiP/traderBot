@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from dotenv import load_dotenv
 
-import config
+import core.config as config
 
 logger = logging.getLogger("paperbot")
 NY = ZoneInfo("America/New_York")

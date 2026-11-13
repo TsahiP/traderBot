@@ -7,8 +7,8 @@ follow-up ("target hit" / "stop hit") to the same channels and flips it true.
 """
 import pandas as pd
 
-import config
-import signals
+import core.config as config
+import signaling.signals as signals
 
 OUTCOME_BARS = 100
 RESOLVED = ("win", "loss", "expired")

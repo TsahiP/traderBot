@@ -14,10 +14,10 @@ import threading
 from datetime import datetime, time, timedelta
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
-import config
-import market_calendar
-import risk
-import scanner
+import core.config as config
+import market.market_calendar as market_calendar
+import core.risk as risk
+import tools.scanner as scanner
 from paper import exit_plan
 from paper.broker import Broker, BrokerError
 

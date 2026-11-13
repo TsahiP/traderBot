@@ -5,8 +5,8 @@ from email.utils import format_datetime
 
 import pytest
 
-import config
-import news_client as nc
+import core.config as config
+import integrations.news_client as nc
 
 
 @pytest.fixture(autouse=True)

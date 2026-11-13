@@ -20,7 +20,7 @@ import math
 
 import pandas as pd
 
-from strategies import run_strategy
+from core.strategies import run_strategy
 
 ATR_PERIOD = 14
 

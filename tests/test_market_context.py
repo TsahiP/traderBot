@@ -4,8 +4,8 @@ import json
 import pandas as pd
 import pytest
 
-import market_context as mc
-import news_client as nc
+import market.market_context as mc
+import integrations.news_client as nc
 
 
 def _bars(closes, spread=0.5):

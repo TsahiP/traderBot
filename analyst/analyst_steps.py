@@ -13,7 +13,7 @@ import json
 import re
 from datetime import date, datetime, timedelta
 
-from llm_client import vision_user_message
+from integrations.llm_client import vision_user_message
 
 STEP_TOKEN_BUDGET = 6000        # first rung; analyst_context._analysis_call escalates
 FRESH_QUARTER_DAYS = 550        # a latest quarter older than this = stale fundamentals

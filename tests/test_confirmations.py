@@ -1,7 +1,7 @@
 """Confluence checks: pass, fail, and not-enough-history for long and short."""
 import pandas as pd
 
-import confirmations
+import charts.confirmations as confirmations
 
 
 def _frame(closes, volume=None, spread=0.5):

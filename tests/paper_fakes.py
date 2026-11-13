@@ -237,7 +237,7 @@ class FakeBroker:
 
 def cross_bars(direction: str, last_day: str) -> pd.DataFrame:
     """Daily bars whose SMA 10/50 crosses (up or down) on the bar dated `last_day`."""
-    from strategy import compute_signals
+    from core.strategy import compute_signals
 
     if direction == "up":
         close = np.r_[np.linspace(110, 100, 70), np.linspace(101, 120, 10)]

@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-import config
-import discord_sync
+import core.config as config
+import integrations.discord_sync as discord_sync
 
 
 @pytest.fixture

@@ -11,11 +11,11 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import config
-import news_client
-import market_data
-from confirmations import ema
-from smc import snapshot_smc
+import core.config as config
+import integrations.news_client as news_client
+import market.market_data as market_data
+from charts.confirmations import ema
+from charts.smc import snapshot_smc
 
 NY = ZoneInfo("America/New_York")
 

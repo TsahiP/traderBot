@@ -5,9 +5,9 @@ import hmac
 import pandas as pd
 import pytest
 
-import bybit_client
-from bybit_client import BybitError, fetch_klines
-from market_symbols import is_bybit_crypto, is_valid_symbol, normalize_symbol, to_bybit_spot_symbol
+import market.bybit_client as bybit_client
+from market.bybit_client import BybitError, fetch_klines
+from market.market_symbols import is_bybit_crypto, is_valid_symbol, normalize_symbol, to_bybit_spot_symbol
 
 _DAY = 86_400_000
 _T0 = 1_577_836_800_000  # 2020-01-01 00:00 UTC

@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import risk
+import core.risk as risk
 
 NY = ZoneInfo("America/New_York")
 NOW = datetime(2026, 10, 27, 10, 30, tzinfo=NY)

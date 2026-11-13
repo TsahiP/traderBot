@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import timemachine as tm
-from market_calendar import NY, is_trading_day
+import tools.timemachine as tm
+from market.market_calendar import NY, is_trading_day
 
 
 def _sessions(n_days=30, drift=0.0, vol=0.002, seed=1, end=datetime(2026, 10, 26)):

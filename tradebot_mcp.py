@@ -14,10 +14,10 @@ from datetime import datetime
 
 from mcp.server.mcpserver import MCPServer
 
-import config
-import market_calendar
-import risk
-from market_symbols import is_bybit_crypto, normalize_symbol
+import core.config as config
+import market.market_calendar as market_calendar
+import core.risk as risk
+from market.market_symbols import is_bybit_crypto, normalize_symbol
 
 NY = market_calendar.NY
 
@@ -44,7 +44,7 @@ def analyze_symbol(symbol: str, risk_usd: float | None = None, refresh: bool = T
     """Full analyst-room data for one ticker: fundamentals + YoY quarters, news (8-K tags),
     price action, macro + relative strength vs SPY, SMC on 1D/15M, 60-day volume profile,
     squeeze momentum, and the step-5 trade plan (entry, stop, TP1/TP2, R:R, shares)."""
-    import analyst_context
+    import analyst.analyst_context as analyst_context
 
     sym = _stock(symbol)
     holding = {"risk_usd": risk_usd} if risk_usd else None
@@ -98,8 +98,8 @@ def time_machine(
     """Monte Carlo replay of the rest of the session from 60 days of the stock's own 5m bars:
     odds of target first / stop first / neither by the close, avg R, real history on past
     sessions and a verdict. at = 'YYYY-MM-DD HH:MM' NY (default now). Stocks only."""
-    import timemachine
-    from market_data import fetch_ohlcv_period
+    import tools.timemachine as timemachine
+    from market.market_data import fetch_ohlcv_period
 
     sym = _stock(symbol)
     if is_bybit_crypto(sym):
@@ -116,7 +116,7 @@ def scan_market(mode: str = "daily", scope: str = "watchlists", symbols: list[st
     """Run the setup scanner. mode: daily (20d breakout, bull flag, MA20 reclaim, oversold,
     oversold bounce) or orb (opening-range breakouts today). scope: watchlists or universe
     (~5,500 US stocks, takes minutes). Or pass explicit symbols."""
-    import scanner
+    import tools.scanner as scanner
 
     syms = [_stock(s) for s in symbols] if symbols else None
     res = scanner.run_scan(mode, symbols=syms, scope=scope, min_price=min_price, min_volume=min_volume)
@@ -126,7 +126,7 @@ def scan_market(mode: str = "daily", scope: str = "watchlists", symbols: list[st
 @server.tool()
 def last_scan() -> dict:
     """The most recent scanner results (from the dashboard, CLI or scan_market)."""
-    import scanner
+    import tools.scanner as scanner
 
     return scanner.read_results() or {"hits": [], "note": "no scan has run yet"}
 
@@ -135,7 +135,7 @@ def last_scan() -> dict:
 def fundamentals(symbol: str, refresh: bool = False) -> dict:
     """Fundamentals snapshot (valuation, margins, balance sheet, 52w, next earnings, last
     quarters with YoY) with the provider of every field."""
-    import funda_client
+    import integrations.funda_client as funda_client
 
     sym = _stock(symbol)
     if refresh:
@@ -147,7 +147,7 @@ def fundamentals(symbol: str, refresh: bool = False) -> dict:
 def news(symbol: str | None = None, limit: int = 20, refresh: bool = False) -> list[dict]:
     """Recent news for a symbol (or every watchlist symbol), newest first. SEC 8-K items carry
     tags such as earnings, leadership, deal, restatement, bankruptcy."""
-    import news_client
+    import integrations.news_client as news_client
 
     sym = _stock(symbol) if symbol else None
     if sym and refresh:
@@ -159,7 +159,7 @@ def news(symbol: str | None = None, limit: int = 20, refresh: bool = False) -> l
 def signal_history(limit: int = 30, symbol: str | None = None, include_filtered: bool = False) -> list[dict]:
     """Candlestick-pattern alerts the signal bot sent (entry/stop/target, confluence score,
     Time Machine odds, outcome win/loss/expired), newest first."""
-    import signals
+    import signaling.signals as signals
 
     rows = signals.read_signals(limit=config.SIGNAL_MAX_LOG, include_filtered=include_filtered)
     if symbol:
@@ -171,7 +171,7 @@ def signal_history(limit: int = 30, symbol: str | None = None, include_filtered:
 @server.tool()
 def signal_stats() -> dict:
     """Alert outcomes by confluence score, and delivered vs blocked win rates."""
-    import signals
+    import signaling.signals as signals
 
     return signals.signal_stats()
 
@@ -204,8 +204,8 @@ def risk_check(symbol: str, entry: float, stop: float, target: float | None = No
 def levels(symbol: str, benchmark: str = "SPY", profile_bars: int = 60) -> dict:
     """Relative strength vs a benchmark (21/63/126/252 days) and the volume profile
     (point of control, value area) of the last `profile_bars` daily bars."""
-    import market_levels
-    from market_data import fetch_ohlcv_period
+    import market.market_levels as market_levels
+    from market.market_data import fetch_ohlcv_period
 
     sym, bench = _stock(symbol), _stock(benchmark)
     df = fetch_ohlcv_period(sym, "1d", "2y")

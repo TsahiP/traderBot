@@ -2,7 +2,7 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-import market_calendar as mc
+import market.market_calendar as mc
 
 NY = ZoneInfo("America/New_York")
 

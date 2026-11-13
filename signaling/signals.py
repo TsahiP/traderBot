@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-import config
-from candle_patterns import PATTERNS
-from market_data import ohlcv_source
-from smc import clean_smc_flags, default_smc_flags
-from market_symbols import normalize_symbol
+import core.config as config
+from charts.candle_patterns import PATTERNS
+from market.market_data import ohlcv_source
+from charts.smc import clean_smc_flags, default_smc_flags
+from market.market_symbols import normalize_symbol
 
 VALID_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "1d"]
 VALID_DISCORD_TIMEFRAMES = [*VALID_TIMEFRAMES, "1w"]

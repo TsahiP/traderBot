@@ -12,7 +12,7 @@ at the next bar open, and flattens at session end when flat_eod is set.
 import numpy as np
 import pandas as pd
 
-from strategy import compute_signals as _sma_signals
+from core.strategy import compute_signals as _sma_signals
 
 
 def _factory(fn):

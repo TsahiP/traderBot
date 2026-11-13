@@ -18,9 +18,9 @@ import json
 import re
 from pathlib import Path
 
-import scanner
-import strategies
-from market_symbols import is_valid_symbol, normalize_symbol
+import tools.scanner as scanner
+import core.strategies as strategies
+from market.market_symbols import is_valid_symbol, normalize_symbol
 
 LLM_MODES = ("off", "shadow", "veto")
 LLM_PENDING_POLICIES = ("proceed", "skip")
@@ -343,7 +343,7 @@ def config_hash(cfg: dict) -> str:
 
 
 def _write(path: Path, cfg: dict) -> None:
-    from signals import _atomic_write  # retries the replace while a reader holds the file
+    from signaling.signals import _atomic_write  # retries the replace while a reader holds the file
 
     _atomic_write(Path(path), json.dumps(cfg, indent=2))
 

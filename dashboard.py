@@ -16,20 +16,20 @@ import pandas as pd
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
-import config
-import discord_sync
-import engine
-import funda_client
-import news_client
-import signals
-import strategies
-from bybit_client import BybitError
-from candle_patterns import PATTERNS as SIGNAL_PATTERNS
+import core.config as config
+import integrations.discord_sync as discord_sync
+import core.engine as engine
+import integrations.funda_client as funda_client
+import integrations.news_client as news_client
+import signaling.signals as signals
+import core.strategies as strategies
+from market.bybit_client import BybitError
+from charts.candle_patterns import PATTERNS as SIGNAL_PATTERNS
 from livebot import get_last_completed_bars
-from llm_client import llm_chat, resolve_llm_model
-from market_data import fetch_ohlcv, fetch_ohlcv_period, fetch_yfinance_history
-from market_symbols import is_bybit_crypto, is_valid_symbol, normalize_symbol
-from strategy import compute_signals, latest_signal
+from integrations.llm_client import llm_chat, resolve_llm_model
+from market.market_data import fetch_ohlcv, fetch_ohlcv_period, fetch_yfinance_history
+from market.market_symbols import is_bybit_crypto, is_valid_symbol, normalize_symbol
+from core.strategy import compute_signals, latest_signal
 
 load_dotenv(config.BASE_DIR / ".env")
 NY = ZoneInfo("America/New_York")
@@ -580,7 +580,7 @@ def api_backtest_run():
 @app.route("/api/timemachine")
 def api_timemachine():
     """Monte Carlo replay of the rest of a session from 60d of 5m bars (stocks)."""
-    import timemachine
+    import tools.timemachine as timemachine
 
     try:
         symbol = normalize_symbol(request.args.get("symbol") or "")
@@ -1025,7 +1025,7 @@ _scan_lock = threading.Lock()
 
 
 def _scan_worker(mode: str, scope: str) -> None:
-    import scanner
+    import tools.scanner as scanner
 
     try:
         scanner.run_scan(mode, scope=scope)
@@ -1038,7 +1038,7 @@ def _scan_worker(mode: str, scope: str) -> None:
 
 @app.route("/api/scanner")
 def api_scanner():
-    import scanner
+    import tools.scanner as scanner
 
     return jsonify({
         "results": scanner.read_results(),
@@ -1072,7 +1072,7 @@ _skill_state = {"running": False, "error": None, "board": None, "account_error":
 
 
 def _skill_worker() -> None:
-    import skill_board
+    import tools.skill_board as skill_board
     from paper.broker import Broker, BrokerError
 
     account = None
@@ -1102,8 +1102,8 @@ def _skill_worker() -> None:
 def _skill_flat_loop() -> None:
     import time
 
-    import market_calendar
-    import skill_board
+    import market.market_calendar as market_calendar
+    import tools.skill_board as skill_board
     from paper.broker import Broker, BrokerError
 
     wakes = 0

@@ -13,20 +13,20 @@ from datetime import datetime
 
 import pandas as pd
 
-import analyst_steps
-import config
-import funda_client
-import news_client
-import signals
-import market_data
-import market_context
-import market_levels
-from confirmations import volume_ratio
-from llm_client import llm_chat_ex, resolve_llm_model
-from smc import snapshot_smc
-import squeeze as squeeze_mod
-import trade_plan
-from analysis_charts import MIN_BARS as CHART_MIN_BARS, render_analysis_chart
+import analyst.analyst_steps as analyst_steps
+import core.config as config
+import integrations.funda_client as funda_client
+import integrations.news_client as news_client
+import signaling.signals as signals
+import market.market_data as market_data
+import market.market_context as market_context
+import market.market_levels as market_levels
+from charts.confirmations import volume_ratio
+from integrations.llm_client import llm_chat_ex, resolve_llm_model
+from charts.smc import snapshot_smc
+import charts.squeeze as squeeze_mod
+import analyst.trade_plan as trade_plan
+from charts.analysis_charts import MIN_BARS as CHART_MIN_BARS, render_analysis_chart
 
 # timeframe -> yfinance period (LuxAlgo SMC needs ~250+ bars: swing 50, ATR 200)
 TF_SPECS = {

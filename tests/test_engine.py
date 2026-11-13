@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import engine
+import core.engine as engine
 
 
 def _bars(closes, highs=None, lows=None, opens=None):

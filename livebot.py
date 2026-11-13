@@ -21,9 +21,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from dotenv import load_dotenv
 
-import config
-import market_calendar
-import risk
+import core.config as config
+import market.market_calendar as market_calendar
+import core.risk as risk
 
 load_dotenv(config.BASE_DIR / ".env")
 
@@ -395,7 +395,7 @@ def risk_limits(now: datetime | None = None) -> risk.RiskLimits:
 
 def run_cycle(trading, data, state: dict, now: datetime) -> str:
     """One poll. Returns a short status for the log/tests."""
-    from strategy import compute_signals, latest_signal
+    from core.strategy import compute_signals, latest_signal
 
     if not trading.get_clock().is_open:
         return "closed"

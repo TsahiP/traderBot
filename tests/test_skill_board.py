@@ -4,8 +4,8 @@ from datetime import datetime, time, timedelta
 import numpy as np
 import pandas as pd
 
-import skill_board
-from market_calendar import NY
+import tools.skill_board as skill_board
+from market.market_calendar import NY
 
 
 def _five_min(day, closes):

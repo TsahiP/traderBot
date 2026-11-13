@@ -2,7 +2,7 @@
 
 A Python starter bot that trades **SPY** with a simple SMA crossover strategy:
 buy when the fast SMA crosses above the slow SMA, sell when it crosses below.
-The exact same signal logic (`strategy.py`) powers both the backtest and the
+The exact same signal logic (`core/strategy.py`) powers both the backtest and the
 live paper bot, so what you backtest is what you trade.
 
 ## Setup
@@ -40,6 +40,10 @@ live paper bot, so what you backtest is what you trade.
    BYBIT_SECRET_KEY=
    ```
 
+**Where code lives:** root holds runnable bots and `dashboard.py`; libraries are
+grouped under `core/`, `market/`, `charts/`, `signaling/`, `integrations/`,
+`analyst/`, `tools/`, and `paper/`. See `HANDSOFF.md` §4.
+
 ## 1. Backtest first (no keys needed)
 
 ```powershell
@@ -49,7 +53,7 @@ python backtest.py
 Downloads ~15 years of SPY history via yfinance, simulates the strategy
 (orders execute at the next bar's open), and prints total return, CAGR,
 max drawdown, trade count and win rate versus buy-and-hold. Set `SYMBOL` in
-`config.py` to a `-USD` ticker (for example `BTC-USD`) to download Bybit
+`core/config.py` to a `-USD` ticker (for example `BTC-USD`) to download Bybit
 spot daily bars instead — that path needs the Bybit keys above. Details are
 written to `output/trades.csv` and `output/equity_curve.csv`.
 
@@ -71,7 +75,7 @@ python livebot.py
   `QUANTITY` shares plus a GTC stop-loss (`STOP_ATR_MULT` × daily ATR below
   the entry) and a GTC take-profit (`TARGET_R` × the risk above it), both
   held at Alpaca so they work even while the bot is off
-- Every entry must pass the **risk gate** (`risk.py`) first: a stop, max loss
+- Every entry must pass the **risk gate** (`core/risk.py`) first: a stop, max loss
   per trade, minimum reward:risk, daily loss budget, trades per day, one
   entry per symbol per day, the NY entry window, a position cap and a cash
   buffer. A blocked entry is logged with every reason; exits are never blocked
@@ -340,7 +344,7 @@ python scanner.py orb                      # opening-range breakouts on today's 
 
 Results: `output/scan_results.json`, most traded first.
 
-**Time Machine** (`timemachine.py`) replays the rest of the session 10,000
+**Time Machine** (`tools/timemachine.py`) replays the rest of the session 10,000
 times from the stock's own 5-minute bars (60 days) and reports the odds of
 target first / stop first / neither, avg R, what really happened on past
 sessions, and a verdict against the break-even rate `1 / (1 + R)`. Intraday
@@ -367,7 +371,7 @@ Claude Desktop (`claude_desktop_config.json`):
   "args": ["D:\\Tp\\tradebot\\tradebot_mcp.py"]}}}
 ```
 
-## Configuration (`config.py`)
+## Configuration (`core/config.py`)
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -389,11 +393,11 @@ Any `RISK_*` limit set to `None` is switched off.
 
 ## Extending
 
-- **Different strategy**: swap the logic inside `strategy.py` - both the
+- **Different strategy**: swap the logic inside `core/strategy.py` - both the
   backtest and the live bot pick it up automatically.
-- **ML advisor**: `strategy.py` can call Qwen via LM Studio's local API
+- **ML advisor**: `core/strategy.py` can call Qwen via LM Studio's local API
   (`http://127.0.0.1:1234/v1/chat/completions`) if you want model-assisted
   signals later.
 - **Risk controls**: the live bot already uses bracket stops and the
-  `risk.py` gate; tighten the `RISK_*` limits in `config.py`, and keep the
-  backtest (`engine.py`) in step if you change the exit rule.
+  `core/risk.py` gate; tighten the `RISK_*` limits in `core/config.py`, and keep the
+  backtest (`core/engine.py`) in step if you change the exit rule.

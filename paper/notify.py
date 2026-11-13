@@ -43,7 +43,7 @@ def webhook_url(route: str) -> str | None:
     url = (os.getenv(f"DISCORD_WEBHOOK_{route.upper()}") or "").strip()
     if url:
         return url
-    import signals
+    import signaling.signals as signals
 
     return signals._webhook_url_from_sync_file(route)
 
@@ -97,7 +97,7 @@ class DiscordNotifier:
                  send: Callable | None = None, backoff=BACKOFF_S, sleep=time.sleep,
                  clock: Callable[[], float] = time.monotonic):
         if send is None:
-            from signals import dc_send as send
+            from signaling.signals import dc_send as send
         self._get_cfg = get_cfg
         self._resolve = resolve
         self._send = send

@@ -1,8 +1,8 @@
 """news_summary: article text extraction, fetch fallbacks, summary message."""
 import pytest
 
-import config
-import news_summary as ns
+import core.config as config
+import integrations.news_summary as ns
 
 LONG = "Nvidia shares rose after the company reported record data-center revenue this quarter. " * 6
 

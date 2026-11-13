@@ -12,7 +12,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-from chart_image import (
+from charts.chart_image import (
     BG,
     DOWN,
     GRID,
@@ -21,8 +21,8 @@ from chart_image import (
     _draw_smc,
     _tick_labels,
 )
-from smc import detect_smc
-import squeeze as sq
+from charts.smc import detect_smc
+import charts.squeeze as sq
 
 ANALYSIS_WINDOW = 300
 RIGHT_PAD = 20           # bars of room for Strong/Weak lines, like the indicator

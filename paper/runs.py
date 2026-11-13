@@ -25,8 +25,8 @@ from enum import Enum
 
 import pandas as pd
 
-import strategies
-from strategy import latest_signal
+import core.strategies as strategies
+from core.strategy import latest_signal
 
 
 class SetupState(str, Enum):

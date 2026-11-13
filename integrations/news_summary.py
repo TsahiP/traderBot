@@ -17,8 +17,8 @@ import json
 import logging
 from urllib.parse import quote, urlparse
 
-import config
-from llm_client import llm_chat_ex
+import core.config as config
+from integrations.llm_client import llm_chat_ex
 
 logger = logging.getLogger("fundabot")
 

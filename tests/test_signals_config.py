@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-import config
-import signals
-from candle_patterns import PATTERNS
+import core.config as config
+import signaling.signals as signals
+from charts.candle_patterns import PATTERNS
 
 
 def _patch_path(monkeypatch, tmp_path):
@@ -186,7 +186,7 @@ def test_default_config_covers_every_pattern():
 def test_atomic_write_retries_a_locked_file(tmp_path, monkeypatch):
     import os as _os
 
-    import signals
+    import signaling.signals as signals
 
     target = tmp_path / "log.json"
     real_replace = _os.replace

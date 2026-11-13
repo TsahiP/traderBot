@@ -12,7 +12,7 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
 | Layer | Tech | Notes |
 |---|---|---|
 | Backend API | Python 3.12 · Flask | `dashboard.py`, port `8000`, API-only |
-| Strategy/engine | pandas | `strategies.py` (registry) + `engine.py` — single source of truth |
+| Strategy/engine | pandas | `core/strategies.py` (registry) + `core/engine.py` — single source of truth |
 | Live trading | alpaca-py (paper) | `livebot.py` |
 | Signal alerts | yfinance or Bybit + bar-close scheduler + matplotlib | `signalbot.py` — candlestick patterns → Telegram + optional Discord (text + chart image). Tickers ending in `-USD` use Bybit spot |
 | Historical data | yfinance; Bybit spot for `*-USD` | backtests, on-demand downloads. `BTC`/`ETH` alias to `BTC-USD`/`ETH-USD` |
@@ -33,9 +33,9 @@ Alpaca **paper** account (never real money), backtests any ticker on demand
                   ┌──────────────────────┐
                   │  Flask API :8000     │  dashboard.py
                   │  ┌────────────────┐  │
-                  │  │ strategies.py  │  │  4-strategy registry (signals)
-                  │  │ engine.py      │  │  simulation: shorts, EOD, costs
-                  │  │ strategy.py    │  │  SMA signals (livebot + SMA strat)
+                  │  │ core/strategies│  │  4-strategy registry (signals)
+                  │  │ core/engine    │  │  simulation: shorts, EOD, costs
+                  │  │ core/strategy  │  │  SMA signals (livebot + SMA strat)
                   │  └────────────────┘  │
                   └──────┬───────┬───────┘
                          │       │
@@ -84,62 +84,72 @@ override synced file).
 
 ```
 tradebot/
-├── config.py          # all knobs: SYMBOL, SMA_FAST/SLOW, QUANTITY, CAPITAL, POLL_INTERVAL_MIN
-├── strategy.py        # SMA signals: compute_signals(df, fast, slow) -> signal col; latest_signal()
-├── strategies.py      # STRATEGIES registry: sma_crossover, vwap_reversion, opening_range_breakout, rsi_mean_reversion
-├── engine.py          # run_backtest() (shorts, EOD, costs), compute_metrics() — shared by CLI + API
-├── market_symbols.py  # normalize tickers; `-USD` means Bybit spot (`BTC-USD` → `BTCUSDT`)
-├── bybit_client.py    # signed Bybit v5 spot klines (no orders)
-├── market_data.py     # fetch_ohlcv(): Bybit for `*-USD`, yfinance otherwise
 ├── backtest.py        # CLI: downloads data, runs engine, writes output/*.csv, prints report
-├── livebot.py         # paper bot loop: market clock, daily bars, risk-gated bracket entries (ATR stop + R target, GTC), broker-exit reconcile, state file
-├── market_calendar.py # rule-based NYSE calendar: holidays(year), early_closes(year), session(d), is_open(dt), stock_bar_due() (signalbot skips closed-market stock scans)
-├── timemachine.py     # Monte Carlo replay of the rest of a session from 60d of 5m bars: replay() odds/avg R/history/verdict, format_line()
-├── market_levels.py   # relative_strength(df, bench) vs SPY; volume_profile(df) POC + value area (volume spread by overlap)
-├── scanner.py         # setup scanner: Nasdaq Trader universe, daily setups (20d breakout, bull flag, MA20 reclaim, oversold, bounce), ORB; output/scan_results.json
-├── skill_board.py     # Day skill tab: daily US scan first (`output/skill_daily.json`), then opening-range entries only on those names. A PASS row is sent as a day bracket (`skill-SYMBOL-date`). Flat-by sells only those names. Orders: `output/skill_orders.json`
-├── tradebot_mcp.py    # MCP server (mcp SDK 2.x MCPServer, stdio): 12 read-only tools over the engine — never places orders
-├── risk.py            # pure entry gate: check_entry() -> PASS/BLOCK with reasons (stop, loss, R:R, daily loss, trades/day, duplicate, NY window, position cap, cash buffer)
-├── signalbot.py       # signal bot loop: poll yfinance or Bybit per config, detect patterns, optional confluence gate, alert Telegram (text + chart PNG)
-├── confirmations.py   # optional confluence checks (EMA 200, volume, RSI, MACD, EMA 50 / Bollinger) → score
-├── signal_outcomes.py # after each wake, mark logged alerts win / loss / expired from bars already fetched
-├── candle_patterns.py # 6 strong Japanese-candlestick detectors + PATTERNS registry {id: label/direction/bars}
-├── squeeze.py         # LazyBear Squeeze Momentum (BB 20/2 + KC 20/1.5 linreg histogram): momentum_series(), squeeze_snapshot(), bar colors
-├── smc.py             # Smart Money Concepts, a port of LuxAlgo SMC (LUXALGO_SETTINGS: swing 50 / internal 5, 5 internal OBs ATR+High/Low, EQH/EQL 3·0.1, FVG auto+extend 5): run_luxalgo(df) state machine, detect_smc(window) chart layers, snapshot_smc(df) dict
-├── news_client.py     # multi-provider news fetch + merged feed for a symbol; geopolitical_headlines() for the macro step
-├── market_context.py  # macro block for the analyst room: QQQ regime, VIX, oil (CL/BZ), ESLT, geopolitics; TTL cache (MACRO_TTL_MIN)
-├── trade_plan.py      # step-5 execution math: round_break(), position_size(), build_trade_plan(price, smc, atr, risk_usd, holding)
-├── analysis_charts.py # render_analysis_chart() — dark 1D/15M PNG with SMC overlay + Premium/EQ/Discount lines + squeeze sub-panel
-├── analyst_context.py # analyst-room data assembly + LLM prompt: gather_symbol_data(), build_context_json(), analysis_messages(), run_analysis()
-├── signals.py         # shared state for the Signals feature: config load/save/validate, signal log + dedupe keys, heartbeat, Telegram + Discord webhook send (text/photo)
-├── discord_channel_routes.py  # Discord channel/category name → canonical route (stock_1h, …)
-├── discord_sync.py    # guild channel scan → output/discord_webhooks.json
-├── chart_image.py     # render_candles() — dark-theme PNG: candles + alert bar highlight + long/short entry/stop/target overlay
-├── llm_client.py      # local LM Studio chat helper: strip reasoning tags, vision parts, load with LLM_IDLE_TTL_S (default 1800s) and unload that model after a shared idle stamp (`output/llm_activity.json`)
-├── analystbot.py      # Discord analyst room: locked fundi-analyst channel + pinned ticker select + position modal -> gather -> LLM -> chunked posts + chart files
 ├── dashboard.py       # Flask API (see §7 for endpoints)
-├── start-web.ps1      # launches API + frontend + browser
+├── livebot.py         # Alpaca paper SMA loop (legacy; do not run with paperbot)
+├── signalbot.py       # signal bot loop: poll yfinance or Bybit per config, detect patterns, optional confluence gate, alert Telegram (text + chart PNG)
+├── paperbot.py        # Paper desk process → `paper/` package
+├── fundabot.py        # fundamentals + news push loop
+├── analystbot.py      # Discord analyst room
+├── scanner.py         # CLI shim → `tools/scanner.py`
+├── tradebot_mcp.py    # MCP server (mcp SDK 2.x MCPServer, stdio): 12 read-only tools — never places orders
+├── start-all.ps1 / start-web.ps1
 ├── requirements.txt
-├── README.md          # user-facing setup
-├── output/            # trades.csv, equity_curve.csv, data_<SYMBOL>.csv, live_trades.csv, signal_config.json, signal_log.json, signal_heartbeat.json
-├── logs/bot.log       # livebot rotating log (1 MB × 3)
-├── logs/signalbot.log # signal bot: wake/idle per cycle, per-scan lines, SIGNAL + dedupe/delivery
+├── README.md / HANDSOFF.md / RUN.md
+├── core/              # shared strategy + sim + knobs
+│   ├── config.py      # all knobs (BASE_DIR = repo root); env + output paths
+│   ├── engine.py      # run_backtest(), compute_metrics() — shared by CLI + API
+│   ├── strategies.py  # STRATEGIES registry
+│   ├── strategy.py    # SMA compute_signals() / latest_signal()
+│   └── risk.py        # check_entry() gates for livebot / paper funnel
+├── market/            # bars, symbols, calendar, macro context
+│   ├── market_data.py # fetch_ohlcv(): Bybit for `*-USD`, yfinance otherwise
+│   ├── market_symbols.py
+│   ├── bybit_client.py
+│   ├── market_calendar.py
+│   ├── market_levels.py
+│   └── market_context.py
+├── charts/            # patterns, SMC, squeeze, PNG renderers, confluence checks
+│   ├── candle_patterns.py
+│   ├── chart_image.py
+│   ├── analysis_charts.py
+│   ├── smc.py
+│   ├── squeeze.py
+│   └── confirmations.py
+├── signaling/         # Signals tab persistence + delivery helpers
+│   ├── signals.py
+│   └── signal_outcomes.py
+├── integrations/      # Discord sync, news, fundamentals, LM Studio
+│   ├── discord_channel_routes.py
+│   ├── discord_sync.py
+│   ├── llm_client.py
+│   ├── news_client.py
+│   ├── news_summary.py
+│   └── funda_client.py
+├── analyst/           # analyst room pipeline (steps, context, trade plan math)
+│   ├── analyst_context.py
+│   ├── analyst_steps.py
+│   └── trade_plan.py
+├── tools/             # scanner, timemachine API, skill board loop
+│   ├── scanner.py
+│   ├── timemachine.py
+│   └── skill_board.py
+├── paper/             # Paper desk implementation (see §16)
+├── output/            # runtime JSON/CSV/SQLite (gitignored artifacts)
+├── logs/
+├── tests/
 └── web/               # Next.js app
     ├── next.config.ts # API proxy rewrites
-    └── src/
-        ├── app/       # layout (dark, fonts, Toaster), page.tsx (Dashboard | Lab | Signals tabs)
-        ├── components/
-        │   ├── charts/       # chart-theme.ts, equity-chart.tsx, lab-chart.tsx
-        │   ├── signals/      # signals-panel, watchlist-form-card, side column, history table, utils
-        │   ├── ui/           # shadcn components (nova)
-        │   └── *.tsx         # ticker-tape, stat-cards, trade-ledger, lab-form, lab-results, metrics-strip
-        ├── hooks/            # use-api.ts (useLive/Stats/Trades/Equity/Strategies), use-backtest-run.ts, use-signals.ts
-        └── lib/              # api.ts (typed fetcher), schemas.ts (zod), format.ts (Intl), utils.ts
+    └── src/           # app/, components/, hooks/, lib/
 ```
+
+**Imports:** run processes from the repo root so packages resolve (`python dashboard.py`, etc.). Library code uses package paths (`core.engine`, `signaling.signals`, `market.market_data`, …) — no flat re-export shims at the root.
+
+**Package blurbs:** `tools/`, `signaling/`, `paper/`, `market/`, and `integrations/` each have a short `README.md`. Update it when that package’s responsibility or entrypoints change (same session as the code).
 
 ## 5. Strategy & execution model
 
-- **Strategies** (all in `strategies.py`, driven by the `STRATEGIES` registry):
+- **Strategies** (all in `core/strategies.py`, driven by the `STRATEGIES` registry):
   - `sma_crossover` — fast SMA crosses above slow → buy (+1), below → sell (−1). Any timeframe.
   - `vwap_reversion` — session-anchored VWAP; long when close deviates ≥ `deviation_pct` below it, exit when it recovers to within `exit_pct`; short the mirror. Intraday only.
   - `opening_range_breakout` — range of the first `range_minutes`; buy a close above range high, sell below range low; target `tp_mult`× range, stop `sl_mult`× range; sessions wider than `max_range_pct` of the open are skipped. Intraday only.
@@ -197,7 +207,7 @@ tradebot/
 | `output/signal_config.json` | Signals tab (`POST /api/signals/config`) | `{lists: [{id, name, symbols, telegram_timeframes[], discord_timeframes[], patterns, analysis}]}` — per-channel timeframe sets; `analysis` is `{enabled, block, min_score, show_details, checks, smc}` (missing on old files loads as off / no block / min 3 / details on / every check off / every `smc` flag off; `block` is forced off when `enabled` is false; `min_score` is 1–5; `checks` is `{trend, volume, rsi, macd, support}` booleans — a check set true blocks that alert when it fails, independent of the score; n/a does not block; `show_details` false keeps only the `Confluence: n/m` line in the alert; `smc` is `{zones, structure, liquidity}` booleans — when `enabled`, any true flag adds that Smart Money layer to the alert PNG only, not confluence); legacy `timeframes` on a list (or flat file) applies to both channels on load; `discord_timeframes` may include `1w` (weekly bars, yfinance `1wk`; legacy `w` coerces to `1w`) and may list TFs whose webhook is not yet set (UI shows “no webhook”; bot retries until env is wired); Telegram timeframes do not include `1w`; each list is its own watchlist with its own scan schedule; legacy `poll_minutes` / `discord_route` on disk are stripped on save |
 | `output/signal_log.json` | `signalbot.py` | every sent alert incl. dedupe key (`list_id\|SYMBOL\|tf\|bar_ts\|pattern`) — retried until required channel sends succeed; capped at 1000 entries. With analysis on, each row also has `confluence` `{score, total, checks[]}` and later `outcome` (`win` target first, `loss` stop first or both on the same bar, `expired` after 100 bars). Rows with `filtered: true` were blocked (score under `min_score`) and never delivered; they still dedupe and feed `/api/signals/stats` |
 | `output/signal_heartbeat.json` | `signalbot.py` | `{ts}` of the last scheduler wake — `/api/signals/status` treats the bot as running when age &lt; `SIGNAL_HEARTBEAT_STALE_SECONDS` (120 s) |
-| `output/discord_webhooks.json` | `discord_sync.py` / `POST /api/signals/discord-sync` | synced route → webhook URL + channel metadata; used when env has no URL for that route |
+| `output/discord_webhooks.json` | `integrations/discord_sync.py` (or `python -m integrations.discord_sync`) / `POST /api/signals/discord-sync` | synced route → webhook URL + channel metadata; used when env has no URL for that route |
 | `logs/signalbot.log` | `signalbot.py` | wake/idle, scan result per job, SIGNAL, dedupe/delivery warnings |
 
 Note: the equity CSV has **tz-aware timestamps** (`-05:00`); `dashboard.py`

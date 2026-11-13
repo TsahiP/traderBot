@@ -1,5 +1,5 @@
 ﻿"""Trade plan (step 5): stop, round break, sizing, TP1/TP2, R:R, holding."""
-import trade_plan as tp
+import analyst.trade_plan as tp
 
 
 def _smc(demand_lo=100.0, demand_hi=103.0, mid=110.0, lo=100.0, hi=120.0,

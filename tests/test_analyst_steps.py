@@ -1,7 +1,7 @@
 import json
 from datetime import date
 
-import analyst_steps as st
+import analyst.analyst_steps as st
 
 
 def _data(**extra):
