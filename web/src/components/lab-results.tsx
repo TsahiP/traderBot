@@ -90,6 +90,11 @@ export function LabResults({
                           EOD
                         </span>
                       )}
+                      {(t.exit_type === "stop" || t.exit_type === "target") && (
+                        <span className="rounded bg-amber/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber">
+                          {t.exit_type === "stop" ? "STOP" : "TP"}
+                        </span>
+                      )}
                       {t.exit_type === "open" && (
                         <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
                           OPEN

@@ -140,9 +140,9 @@ export function LabChart({ series, markers }: LabChartProps) {
       markers.map((m) => ({
         time: toTime(m.date) as UTCTimestamp,
         position: m.side === "sell" ? "aboveBar" : "belowBar",
-        color: m.eod ? chartTheme.amber : m.side === "buy" ? chartTheme.up : chartTheme.down,
+        color: m.eod || m.exit ? chartTheme.amber : m.side === "buy" ? chartTheme.up : chartTheme.down,
         shape: m.side === "sell" ? "arrowDown" : "arrowUp",
-        text: m.eod ? "EOD" : m.side.toUpperCase(),
+        text: m.eod ? "EOD" : m.exit === "stop" ? "STOP" : m.exit === "target" ? "TP" : m.side.toUpperCase(),
       })),
     );
 

@@ -11,6 +11,7 @@ import {
   SignalsConfig,
   SignalsConfigResponse,
   SignalsHistoryResponse,
+  SignalsStats,
   SignalsStatus,
 } from "@/lib/schemas";
 
@@ -24,6 +25,14 @@ export function useSignalsStatus() {
   return useSWR<SignalsStatus>(
     "/api/signals/status",
     (url: string) => apiFetcher(url, SignalsStatus),
+    { refreshInterval: 30_000 },
+  );
+}
+
+export function useSignalsStats() {
+  return useSWR<SignalsStats>(
+    "/api/signals/stats",
+    (url: string) => apiFetcher(url, SignalsStats),
     { refreshInterval: 30_000 },
   );
 }

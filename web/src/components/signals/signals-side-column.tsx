@@ -23,6 +23,7 @@ import type {
 
 import { DiscordWebhooksCard } from "./discord-webhooks-card";
 import { RecentSignalsTable } from "./recent-signals-table";
+import { SignalStatsCard } from "./signal-stats-card";
 
 export function SignalsSideColumn({
   status,
@@ -100,6 +101,8 @@ export function SignalsSideColumn({
       </Card>
 
       <DiscordWebhooksCard cfgData={cfgData} />
+
+      <SignalStatsCard />
 
       <RecentSignalsTable signals={signals} />
     </div>

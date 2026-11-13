@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-import config
-import signals
-from candle_patterns import PATTERNS
+import core.config as config
+import signaling.signals as signals
+from charts.candle_patterns import PATTERNS
 
 
 def _patch_path(monkeypatch, tmp_path):
@@ -131,8 +131,74 @@ def test_validate_rejects_bad_lists():
         })
 
 
+def test_analysis_defaults_when_omitted():
+    cfg = signals.validate_config({"lists": [_list()]})
+    assert cfg["lists"][0]["analysis"] == signals.default_analysis()
+
+
+def test_analysis_round_trip_and_block_requires_enabled():
+    cfg = signals.validate_config({
+        "lists": [_list(analysis={"enabled": True, "block": True, "min_score": 4})],
+    })
+    assert cfg["lists"][0]["analysis"]["enabled"] is True
+    assert cfg["lists"][0]["analysis"]["block"] is True
+    assert cfg["lists"][0]["analysis"]["min_score"] == 4
+    assert cfg["lists"][0]["analysis"]["checks"]["trend"] is False
+    off = signals.validate_config({
+        "lists": [_list(analysis={"enabled": False, "block": True, "min_score": 2})],
+    })
+    assert off["lists"][0]["analysis"]["block"] is False
+
+
+def test_analysis_smc_defaults_and_round_trip():
+    cfg = signals.validate_config({"lists": [_list()]})
+    assert cfg["lists"][0]["analysis"]["smc"] == {
+        "zones": False,
+        "structure": False,
+        "liquidity": False,
+    }
+    cfg = signals.validate_config({
+        "lists": [_list(analysis={"enabled": True, "smc": {"zones": True, "structure": True}})],
+    })
+    assert cfg["lists"][0]["analysis"]["smc"]["zones"] is True
+    assert cfg["lists"][0]["analysis"]["smc"]["structure"] is True
+    assert cfg["lists"][0]["analysis"]["smc"]["liquidity"] is False
+
+
+def test_analysis_rejects_bad_min_score():
+    with pytest.raises(ValueError, match="min_score"):
+        signals.validate_config({
+            "lists": [_list(analysis={"enabled": True, "min_score": 0})],
+        })
+    with pytest.raises(ValueError, match="min_score"):
+        signals.validate_config({
+            "lists": [_list(analysis={"enabled": True, "min_score": "high"})],
+        })
+
+
 def test_default_config_covers_every_pattern():
     cfg = signals.default_config()
     assert cfg["lists"][0]["patterns"] == list(PATTERNS.keys())
     assert cfg["lists"][0]["telegram_timeframes"] == ["1d"]
     assert cfg["lists"][0]["discord_timeframes"] == ["1d"]
+
+
+def test_atomic_write_retries_a_locked_file(tmp_path, monkeypatch):
+    import os as _os
+
+    import signaling.signals as signals
+
+    target = tmp_path / "log.json"
+    real_replace = _os.replace
+    calls = {"n": 0}
+
+    def flaky(src, dst):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(5, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(signals.os, "replace", flaky)
+    monkeypatch.setattr(signals, "REPLACE_RETRY_S", 0.0)
+    signals._atomic_write(target, "[]")
+    assert target.read_text(encoding="utf-8") == "[]" and calls["n"] == 3

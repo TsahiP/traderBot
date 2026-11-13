@@ -64,7 +64,7 @@ export const Trade = z.object({
   exit_price: z.number(),
   qty: z.number().int(),
   pnl: z.number(),
-  source: z.enum(["live", "backtest"]),
+  source: z.enum(["live", "paper", "backtest"]),
 });
 export type Trade = z.infer<typeof Trade>;
 
@@ -89,6 +89,12 @@ export const RunMetrics = z.object({
   wins: z.number().int(),
   win_rate: z.number().nullable(),
   costs_total: z.number(),
+  profit_factor: z.number().nullable().optional(),
+  expectancy: z.number().nullable().optional(),
+  avg_win: z.number().nullable().optional(),
+  avg_loss: z.number().nullable().optional(),
+  avg_r: z.number().nullable().optional(),
+  sharpe: z.number().nullable().optional(),
 });
 export type RunMetrics = z.infer<typeof RunMetrics>;
 
@@ -98,9 +104,10 @@ export const RunTrade = z.object({
   exit_date: z.string().nullable(),
   exit_price: z.number().nullable(),
   side: z.enum(["long", "short"]),
-  exit_type: z.enum(["signal", "eod", "open"]),
+  exit_type: z.enum(["signal", "eod", "open", "stop", "target"]),
   pnl: z.number(),
   costs: z.number(),
+  r_multiple: z.number().nullable().optional(),
 });
 export type RunTrade = z.infer<typeof RunTrade>;
 
@@ -109,6 +116,7 @@ export const RunMarker = z.object({
   date: z.string(),
   side: z.enum(["buy", "sell"]),
   eod: z.boolean().optional(),
+  exit: z.enum(["stop", "target"]).optional(),
   price: z.number(),
 });
 export type RunMarker = z.infer<typeof RunMarker>;
@@ -137,6 +145,8 @@ export const BacktestRun = z.object({
     allow_short: z.boolean(),
     cost_per_share: z.number(),
     flat_eod: z.boolean(),
+    stop_atr: z.number().optional(),
+    target_r: z.number().optional(),
     params: z.record(z.string(), z.number()),
   }),
   metrics: RunMetrics,

@@ -1,10 +1,14 @@
 "use client";
 
-import { FlaskConical, LayoutDashboard, Radar } from "lucide-react";
+import { Activity, FlaskConical, LayoutDashboard, Newspaper, Radar, ScanSearch, Timer } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { SignalsPanel } from "@/components/signals/signals-panel";
+import { FundiPanel } from "@/components/fundi/fundi-panel";
+import { ScannerPanel } from "@/components/scanner/scanner-panel";
+import { SkillPanel } from "@/components/skill/skill-panel";
+import { PaperPanel } from "@/components/paper/paper-panel";
 import { TickerTape } from "@/components/ticker-tape";
 import { StatCards } from "@/components/stat-cards";
 import { EquityChart } from "@/components/charts/equity-chart";
@@ -34,6 +38,10 @@ export default function Home() {
               <LayoutDashboard data-icon="inline-start" />
               Dashboard
             </TabsTrigger>
+            <TabsTrigger value="paper" className="gap-1.5">
+              <Activity data-icon="inline-start" />
+              Paper desk
+            </TabsTrigger>
             <TabsTrigger value="lab" className="gap-1.5">
               <FlaskConical data-icon="inline-start" />
               Backtest lab
@@ -41,6 +49,18 @@ export default function Home() {
             <TabsTrigger value="signals" className="gap-1.5">
               <Radar data-icon="inline-start" />
               Signals
+            </TabsTrigger>
+            <TabsTrigger value="fundi" className="gap-1.5">
+              <Newspaper data-icon="inline-start" />
+              Fundi
+            </TabsTrigger>
+            <TabsTrigger value="scanner" className="gap-1.5">
+              <ScanSearch data-icon="inline-start" />
+              Scanner
+            </TabsTrigger>
+            <TabsTrigger value="skill" className="gap-1.5">
+              <Timer data-icon="inline-start" />
+              Day skill
             </TabsTrigger>
           </TabsList>
 
@@ -64,7 +84,7 @@ export default function Home() {
               <CardHeader>
                 <CardTitle className="text-sm">Trade ledger</CardTitle>
                 <CardDescription>
-                  Every closed round trip — paper bot trades tagged LIVE,
+                  Every closed round trip — livebot trades tagged LIVE, paperbot PAPER,
                   saved runs tagged BACKTEST
                 </CardDescription>
               </CardHeader>
@@ -72,6 +92,10 @@ export default function Home() {
                 <TradeLedger trades={trades?.trades} />
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="paper" className="flex flex-col gap-4">
+            <PaperPanel />
           </TabsContent>
 
           <TabsContent value="lab" className="flex flex-col gap-4">
@@ -126,7 +150,8 @@ export default function Home() {
                         </CardTitle>
                         <CardDescription>
                           ▲ buy fill · ▼ sell fill · amber = forced session-end
-                          close — orders execute at the next bar&apos;s open;
+                          close (EOD) or bracket exit (STOP / TP) — orders execute at
+                          the next bar&apos;s open;
                           every marker has a row in Trade results below
                         </CardDescription>
                       </CardHeader>
@@ -149,6 +174,18 @@ export default function Home() {
 
           <TabsContent value="signals" className="flex flex-col gap-4">
             <SignalsPanel />
+          </TabsContent>
+
+          <TabsContent value="fundi" className="flex flex-col gap-4">
+            <FundiPanel />
+          </TabsContent>
+
+          <TabsContent value="scanner" className="flex flex-col gap-4">
+            <ScannerPanel />
+          </TabsContent>
+
+          <TabsContent value="skill" className="flex flex-col gap-4">
+            <SkillPanel />
           </TabsContent>
         </Tabs>
       </main>

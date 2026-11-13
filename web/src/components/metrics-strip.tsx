@@ -48,6 +48,26 @@ export function MetricsStrip({
           "—"
         )}
       </Metric>
+      <Metric label="pf">
+        {metrics.profit_factor != null ? metrics.profit_factor.toFixed(2) : "—"}
+      </Metric>
+      <Metric label="exp/trade">
+        {metrics.expectancy != null ? (
+          <span className={metrics.expectancy >= 0 ? "text-up" : "text-down"}>
+            {fmtUsd(metrics.expectancy)}
+          </span>
+        ) : (
+          "—"
+        )}
+      </Metric>
+      {metrics.avg_r != null && (
+        <Metric label="avg r">
+          <span className={metrics.avg_r >= 0 ? "text-up" : "text-down"}>
+            {metrics.avg_r.toFixed(2)}R
+          </span>
+        </Metric>
+      )}
+      <Metric label="sharpe">{metrics.sharpe != null ? metrics.sharpe.toFixed(2) : "—"}</Metric>
       <Metric label="costs">
         <span className="text-down">{fmtUsd(-metrics.costs_total)}</span>
       </Metric>

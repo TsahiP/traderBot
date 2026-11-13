@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-import signals
+import signaling.signals as signals
 from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")

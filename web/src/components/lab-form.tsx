@@ -59,6 +59,8 @@ export function LabForm({ onRun, loading, symbol }: LabFormProps) {
       capital: 100000,
       allow_short: false,
       cost_per_share: 0.01,
+      stop_atr: 0,
+      target_r: 0,
       fast: 10,
       slow: 50,
     },
@@ -202,6 +204,37 @@ export function LabForm({ onRun, loading, symbol }: LabFormProps) {
               {...register("cost_per_share")}
             />
             <FieldError errors={[err("cost_per_share")]} />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field data-invalid={!!err("stop_atr")}>
+            <FieldLabel htmlFor="stop_atr">Stop (× ATR, 0 = off)</FieldLabel>
+            <Input
+              id="stop_atr"
+              type="number"
+              step="0.5"
+              min={0}
+              max={10}
+              aria-invalid={!!err("stop_atr")}
+              className="tabular-nums"
+              {...register("stop_atr")}
+            />
+            <FieldError errors={[err("stop_atr")]} />
+          </Field>
+          <Field data-invalid={!!err("target_r")}>
+            <FieldLabel htmlFor="target_r">Target (R, 0 = off)</FieldLabel>
+            <Input
+              id="target_r"
+              type="number"
+              step="0.5"
+              min={0}
+              max={10}
+              aria-invalid={!!err("target_r")}
+              className="tabular-nums"
+              {...register("target_r")}
+            />
+            <FieldError errors={[err("target_r")]} />
           </Field>
         </div>
 

@@ -6,6 +6,7 @@ The Next.js frontend (web/) proxies /api/* to this server (port 8000).
 """
 import json
 import os
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -15,17 +16,20 @@ import pandas as pd
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
-import config
-import discord_sync
-import engine
-import signals
-import strategies
-from bybit_client import BybitError
-from candle_patterns import PATTERNS as SIGNAL_PATTERNS
+import core.config as config
+import integrations.discord_sync as discord_sync
+import core.engine as engine
+import integrations.funda_client as funda_client
+import integrations.news_client as news_client
+import signaling.signals as signals
+import core.strategies as strategies
+from market.bybit_client import BybitError
+from charts.candle_patterns import PATTERNS as SIGNAL_PATTERNS
 from livebot import get_last_completed_bars
-from market_data import fetch_ohlcv, fetch_yfinance_history
-from market_symbols import is_bybit_crypto, is_valid_symbol, normalize_symbol
-from strategy import compute_signals, latest_signal
+from integrations.llm_client import llm_chat, resolve_llm_model
+from market.market_data import fetch_ohlcv, fetch_ohlcv_period, fetch_yfinance_history
+from market.market_symbols import is_bybit_crypto, is_valid_symbol, normalize_symbol
+from core.strategy import compute_signals, latest_signal
 
 load_dotenv(config.BASE_DIR / ".env")
 NY = ZoneInfo("America/New_York")
@@ -34,6 +38,8 @@ app = Flask(__name__)
 
 TRADES_FILE = config.OUTPUT_DIR / "live_trades.csv"
 TRADES_BT_FILE = config.OUTPUT_DIR / "trades.csv"
+PAPER_DB_PATH = config.PAPERBOT_DB_PATH      # paperbot's journal, opened read-only
+PAPER_ONLINE_S = 10                           # heartbeat younger than this = bot online
 EQUITY_FILE = config.OUTPUT_DIR / "equity_curve.csv"
 
 MAX_SERIES_BARS = 800
@@ -93,6 +99,43 @@ def load_backtest_trades() -> list[dict]:
     ]
 
 
+def _paper_journal():
+    """Read-only view of paperbot.db, or None before the bot ever ran."""
+    from paper.journal import Journal
+
+    try:
+        return Journal(PAPER_DB_PATH, readonly=True)
+    except FileNotFoundError:
+        return None
+
+
+def load_paper_trades() -> list[dict]:
+    j = _paper_journal()
+    if j is None:
+        return []
+    try:
+        rows = j.trades(closed=True)
+    finally:
+        j.close()
+    return [
+        {
+            "entry_date": fmt_ts(r["entry_ts"]),
+            "entry_price": float(r["entry_price"]),
+            "exit_date": fmt_ts(r["exit_ts"]),
+            "exit_price": float(r["exit_price"]),
+            "qty": int(round(r["qty"])),
+            "pnl": float(r["pnl"]),
+            "source": "paper",
+            "symbol": r["symbol"],
+            "side": r["side"],
+            "r": r["r"],
+            "exit_reason": r["exit_reason"],
+            "run_id": r["run_id"],
+        }
+        for r in rows
+    ]
+
+
 def load_backtest_curve() -> pd.DataFrame | None:
     if not EQUITY_FILE.exists():
         return None
@@ -115,7 +158,7 @@ def live_snapshot() -> dict:
         data = StockHistoricalDataClient(key, secret)
 
         clock = trading.get_clock()
-        bars = get_last_completed_bars(data)
+        bars = get_last_completed_bars(data, datetime.now(NY))
         df = compute_signals(bars, config.SMA_FAST, config.SMA_SLOW)
         signal = latest_signal(df)
 
@@ -153,6 +196,14 @@ def live_snapshot() -> dict:
         return {"connected": False, "reason": f"Alpaca error: {exc}"}
 
 
+def _opt_round(value, digits: int) -> float | None:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(f, digits) if np.isfinite(f) else None
+
+
 def build_run_payload(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: float) -> dict:
     """Downsample the curve for the browser and extract buy/sell markers."""
     n = len(curve)
@@ -182,6 +233,15 @@ def build_run_payload(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: flo
             "eod": True,
             "price": round(float(curve.at[orig, "Close"]), 2),
         })
+    if "bracket_exit" in curve.columns:
+        for orig in curve.index[curve["bracket_exit"] != ""].tolist():
+            markers.append({
+                "index": pos_of(curve.index.get_loc(orig)),
+                "date": ts(orig),
+                "side": str(curve.at[orig, "bracket_exit"]),
+                "exit": str(curve.at[orig, "bracket_kind"]),
+                "price": round(float(curve.at[orig, "bracket_price"]), 2),
+            })
 
     has_sma = "sma_fast" in curve.columns
     return {
@@ -222,6 +282,7 @@ def build_run_payload(curve: pd.DataFrame, trades_df: pd.DataFrame, capital: flo
                 "exit_type": r["exit_type"],
                 "pnl": round(float(r["pnl"]), 2),
                 "costs": round(float(r["costs"]), 2),
+                "r_multiple": _opt_round(r.get("r_multiple"), 2),
             }
             for _, r in trades_df.iterrows()
         ],
@@ -251,7 +312,7 @@ def api_stats():
 
 @app.route("/api/trades")
 def api_trades():
-    trades = load_live_trades() + load_backtest_trades()
+    trades = load_live_trades() + load_paper_trades() + load_backtest_trades()
     trades.sort(key=lambda t: t["exit_date"], reverse=True)
     return jsonify({"trades": trades})
 
@@ -287,6 +348,75 @@ def api_live():
                 "fallback": "backtest",
             })
     return jsonify(snap)
+
+
+# ---- Paper desk (read-only; the live bot serves its own /state and /stream on :8100) ----
+
+def _paper_read(fn, empty):
+    j = _paper_journal()
+    if j is None:
+        return jsonify(empty)
+    try:
+        return jsonify(fn(j))
+    finally:
+        j.close()
+
+
+def _paper_online(heartbeat: dict | None) -> bool:
+    if not heartbeat or not heartbeat.get("ts"):
+        return False
+    try:
+        age = (datetime.now(NY) - datetime.fromisoformat(heartbeat["ts"])).total_seconds()
+    except ValueError:
+        return False
+    return age < PAPER_ONLINE_S
+
+
+@app.route("/api/paper/state")
+def api_paper_state():
+    def build(j):
+        day = datetime.now(NY).date().isoformat()
+        hb = j.read_heartbeat()
+        entries = j.entries_today(day)
+        return {
+            "online": _paper_online(hb), "empty": False, "heartbeat": hb,
+            "open_trades": j.open_trades(),
+            "proposals": j.decisions_by_outcome("proposed"),
+            "setups": j.setups(day),
+            "counters": {"entries_today": len(entries),
+                         "daily_loss_used": round(sum(e["max_loss"] or 0.0 for e in entries), 2)},
+            "last_event_id": j.last_event_id(),
+        }
+
+    return _paper_read(build, {"online": False, "empty": True})
+
+
+@app.route("/api/paper/trades")
+def api_paper_trades():
+    run_id = request.args.get("run_id") or None
+    return _paper_read(lambda j: {"trades": j.trades(run_id=run_id, closed=True)}, {"trades": []})
+
+
+@app.route("/api/paper/decisions")
+def api_paper_decisions():
+    day = request.args.get("day") or None
+    return _paper_read(lambda j: {"decisions": j.decisions(day=day)}, {"decisions": []})
+
+
+@app.route("/api/paper/events")
+def api_paper_events():
+    try:
+        after = int(request.args.get("after", 0))
+        limit = min(int(request.args.get("limit", 500)), 2000)
+    except ValueError:
+        return jsonify({"error": "after and limit must be numbers"}), 400
+    return _paper_read(lambda j: {"events": j.events_since(after, limit=limit)}, {"events": []})
+
+
+@app.route("/api/paper/equity")
+def api_paper_equity():
+    since = request.args.get("since") or None
+    return _paper_read(lambda j: {"equity": j.equity(since=since)}, {"equity": []})
 
 
 @app.route("/api/strategies")
@@ -342,6 +472,8 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         else:
             allow_short = (allow_short_raw or "false").lower() in ("1", "true", "yes")
         cost_per_share = float(raw.get("cost_per_share") or 0.0)
+        stop_atr = float(raw.get("stop_atr") or 0.0)
+        target_r = float(raw.get("target_r") or 0.0)
     except ValueError:
         return None, 400, "Invalid parameter values"
 
@@ -356,6 +488,8 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         return None, 400, "qty must be 1-100000 and capital > 0"
     if cost_per_share < 0 or cost_per_share > 1:
         return None, 400, "cost_per_share must be $0-$1"
+    if not (0 <= stop_atr <= 10 and 0 <= target_r <= 10):
+        return None, 400, "stop_atr and target_r must be 0-10 (0 = off)"
     try:
         params = strategies.parse_params(spec, raw)
     except ValueError as exc:
@@ -414,6 +548,8 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         allow_short=allow_short,
         cost_per_share=cost_per_share,
         flat_eod=flat_eod,
+        stop_atr_mult=stop_atr,
+        target_r=target_r,
     )
     payload = build_run_payload(curve, trades_df, capital)
     payload["meta"] = {
@@ -426,6 +562,8 @@ def run_backtest_from(raw) -> tuple[dict | None, int, str | None]:
         "allow_short": allow_short,
         "cost_per_share": cost_per_share,
         "flat_eod": flat_eod,
+        "stop_atr": stop_atr,
+        "target_r": target_r,
         "params": {k: v for k, v in params.items()},
     }
     return payload, 200, None
@@ -439,6 +577,34 @@ def api_backtest_run():
     return jsonify(payload)
 
 
+@app.route("/api/timemachine")
+def api_timemachine():
+    """Monte Carlo replay of the rest of a session from 60d of 5m bars (stocks)."""
+    import tools.timemachine as timemachine
+
+    try:
+        symbol = normalize_symbol(request.args.get("symbol") or "")
+        entry = float(request.args["entry"])
+        stop = float(request.args["stop"])
+        target = float(request.args["target"])
+        side = (request.args.get("side") or "long").lower()
+        runs = min(max(int(request.args.get("runs", timemachine.DEFAULT_RUNS)), 100), 20_000)
+        seed = int(request.args.get("seed", timemachine.DEFAULT_SEED))
+        at_raw = request.args.get("at")
+        at = (datetime.strptime(at_raw, "%Y-%m-%d %H:%M").replace(tzinfo=NY)
+              if at_raw else datetime.now(NY))
+    except (KeyError, ValueError):
+        return jsonify({"error": "need symbol, entry, stop, target (numbers); optional side, runs, seed, at='YYYY-MM-DD HH:MM' NY"}), 400
+    if not is_valid_symbol(symbol) or is_bybit_crypto(symbol):
+        return jsonify({"error": "stock tickers only (the replay uses NYSE sessions)"}), 400
+    try:
+        df5 = fetch_ohlcv_period(symbol, "5m", "60d")
+        return jsonify(timemachine.replay(df5, entry=entry, stop=stop, target=target, at=at,
+                                          side=side, runs=runs, seed=seed))
+    except timemachine.TimeMachineError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 # ---- Local LLM advisor (LM Studio, OpenAI-compatible API) ----
 
 SYSTEM_PROMPT = """You are a quantitative trading analyst. You review backtest results from a strategy lab and give honest, actionable advice to a retail trader.
@@ -450,54 +616,6 @@ Rules:
 - Never claim future performance, never invent numbers, no hype.
 - Answer with exactly three short markdown sections: "## Diagnosis", "## Suggested configurations", "## Risks".
 - Keep it under 350 words."""
-
-_llm_model: str | None = None
-
-
-def resolve_llm_model() -> str:
-    """Pick the model to chat with: configured one, or best auto-detect."""
-    global _llm_model
-    if _llm_model:
-        return _llm_model
-    if config.LLM_MODEL:
-        _llm_model = config.LLM_MODEL
-        return _llm_model
-    import requests as _requests
-
-    r = _requests.get(f"{config.LLM_BASE_URL}/models", timeout=10)
-    r.raise_for_status()
-    ids = [m["id"] for m in r.json().get("data", [])]
-    chat_ids = [m for m in ids if "embed" not in m.lower()]
-    qwen_chat = [m for m in chat_ids if "qwen" in m.lower() and "vl" not in m.lower()]
-    pick = (
-        next((m for m in chat_ids if "hermes" in m.lower()), None)
-        or next((m for m in qwen_chat if "qwen3" in m.lower()), None)
-        or (qwen_chat[0] if qwen_chat else None)
-        or (chat_ids[0] if chat_ids else None)
-    )
-    if not pick:
-        raise RuntimeError("no chat models found in LM Studio")
-    _llm_model = pick
-    return pick
-
-
-def llm_chat(messages: list[dict]) -> str:
-    """One chat round trip against the local LM Studio server."""
-    import requests as _requests
-
-    model = resolve_llm_model()
-    r = _requests.post(
-        f"{config.LLM_BASE_URL}/chat/completions",
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": 0.4,
-            "max_tokens": 800,
-        },
-        timeout=600,
-    )
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
 
 
 def build_analysis_context(payload: dict, spec: dict) -> str:
@@ -522,6 +640,8 @@ def build_analysis_context(payload: dict, spec: dict) -> str:
                 "capital": meta["capital"],
                 "cost_per_share": meta["cost_per_share"],
                 "flat_eod": meta["flat_eod"],
+                "stop_atr_mult": meta.get("stop_atr", 0.0),
+                "target_r": meta.get("target_r", 0.0),
             },
             "results_decimal_fractions": {
                 "start": metrics["start"],
@@ -535,6 +655,10 @@ def build_analysis_context(payload: dict, spec: dict) -> str:
                 "wins": metrics["wins"],
                 "win_rate": metrics["win_rate"],
                 "costs_total": metrics["costs_total"],
+                "sharpe": metrics.get("sharpe"),
+                "profit_factor": metrics.get("profit_factor"),
+                "expectancy_usd": metrics.get("expectancy"),
+                "avg_r": metrics.get("avg_r"),
             },
             "trade_stats": {
                 "avg_win": avg([t["pnl"] for t in wins]),
@@ -544,6 +668,8 @@ def build_analysis_context(payload: dict, spec: dict) -> str:
                 "long_pnl": round(sum(t["pnl"] for t in long_trades), 2),
                 "short_pnl": round(sum(t["pnl"] for t in short_trades), 2),
                 "eod_exits": sum(1 for t in closed if t["exit_type"] == "eod"),
+                "stop_exits": sum(1 for t in closed if t["exit_type"] == "stop"),
+                "target_exits": sum(1 for t in closed if t["exit_type"] == "target"),
                 "open_positions": len(trades) - len(closed),
             },
             "allowed_param_ranges": [
@@ -666,7 +792,13 @@ def api_signals_history():
         limit = min(max(int(request.args.get("limit", 50)), 1), 200)
     except ValueError:
         limit = 50
-    return jsonify({"signals": signals.read_signals(limit)})
+    include_filtered = request.args.get("include_filtered", "").lower() in ("1", "true", "yes")
+    return jsonify({"signals": signals.read_signals(limit, include_filtered=include_filtered)})
+
+
+@app.route("/api/signals/stats")
+def api_signals_stats():
+    return jsonify(signals.signal_stats())
 
 
 @app.route("/api/signals/test", methods=["POST"])
@@ -750,5 +882,269 @@ def api_signals_discord_sync_run():
     })
 
 
+# ---- Fundamentals & news (fundabot / on-demand) ----
+
+FUNDI_HEARTBEAT_STALE_SECONDS = 15 * 60
+FUNDI_REFRESH_MAX = 10         # max symbols per on-demand refresh call
+
+
+@app.route("/api/fundi")
+def api_fundi():
+    """Watchlists grouped snapshots + bot status for the Fundi tab."""
+    cfg = signals.load_config()
+    lists = []
+    groups: dict[str, list[str]] = {}
+    for watchlist in cfg.get("lists", []):
+        stocks, cryptos = [], []
+        for raw in watchlist.get("symbols", []):
+            symbol = normalize_symbol(raw)
+            if not symbol:
+                continue
+            if is_bybit_crypto(symbol):
+                if symbol not in cryptos:
+                    cryptos.append(symbol)
+            elif symbol not in stocks:
+                stocks.append(symbol)
+        for symbol in stocks + cryptos:
+            groups.setdefault(symbol, [])
+        lists.append({
+            "id": watchlist["id"],
+            "name": watchlist["name"],
+            "stocks": stocks,
+            "crypto": cryptos,
+        })
+    snapshots = {}
+    for symbol in groups:
+        snap = funda_client.read_snapshot(symbol)
+        if snap is not None:  # symbols not yet refreshed are simply absent
+            snapshots[symbol] = snap
+    hb = None
+    if config.FUNDA_HEARTBEAT_PATH.exists():
+        try:
+            hb = json.loads(config.FUNDA_HEARTBEAT_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            hb = None
+    running, hb_ts, hb_age = False, None, None
+    if hb:
+        try:
+            ts = datetime.fromisoformat(hb["ts"])
+            hb_age = max(0.0, (datetime.now(ts.tzinfo) - ts).total_seconds())
+            hb_ts, running = hb["ts"], hb_age < FUNDI_HEARTBEAT_STALE_SECONDS
+        except (ValueError, TypeError, KeyError):
+            pass
+    digest_date = None
+    try:
+        digest_date = json.loads(
+            (config.FUNDA_DIR / "funda_digest.json").read_text(encoding="utf-8")
+        ).get("last_date")
+    except (json.JSONDecodeError, OSError):
+        digest_date = None
+    return jsonify({
+        "lists": lists,
+        "snapshots": snapshots,
+        "bot": {
+            "running": running,
+            "ts": hb_ts,
+            "heartbeat_age_s": hb_age,
+            "last_digest_date": digest_date,
+            "news_configured": {
+                "stocks": bool(signals.discord_webhook_url("stock_news")),
+                "crypto": bool(signals.discord_webhook_url("crypto_news")),
+            },
+        },
+        "quota": funda_client.quota_status(),
+        "keys": funda_client.configured_keys(),
+    })
+
+
+@app.route("/api/fundi/news")
+def api_fundi_news():
+    try:
+        limit = min(max(int(request.args.get("limit", 40)), 1), 200)
+    except ValueError:
+        limit = 40
+    symbol = request.args.get("symbol")
+    if symbol:
+        symbol = normalize_symbol(symbol)
+    from_signal_log = news_client.read_all_news(symbol=symbol, limit=limit)
+    return jsonify({"news": from_signal_log, "sent_count": len(news_client.sent_ids())})
+
+
+@app.route("/api/fundi/refresh", methods=["POST"])
+def api_fundi_refresh():
+    """On-demand snapshot refresh for one symbol (or 'all')."""
+    body, err = _json_object_body()
+    if err:
+        return err
+    symbol = str(body.get("symbol", "")).strip().upper()
+    force = bool(body.get("force", True))
+    if symbol in ("ALL", "ALL STOCKS", "ALL_STOCKS"):
+        cfg = signals.load_config()
+        stocks, _ = fundabot_watch_items(cfg)
+        stocks = stocks[:FUNDI_REFRESH_MAX]
+    else:
+        if not symbol:
+            return jsonify({"error": "symbol is required"}), 400
+        symbol = normalize_symbol(symbol)
+        stocks = [symbol]
+    out = {}
+    for sym in stocks:
+        try:
+            if is_bybit_crypto(sym):
+                snap = funda_client.refresh_crypto(sym, force=force)
+            else:
+                snap = funda_client.refresh_symbol(sym, force=force)
+            out[sym] = snap
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"error": f"{sym}: {str(exc)[:140]}"}), 502
+    return jsonify({
+        "refreshed": list(out.keys()),
+        "snapshots": out,
+        "quota": funda_client.quota_status(),
+    })
+
+
+def fundabot_watch_items(cfg: dict) -> tuple[list[str], list[str]]:
+    """Shared with fundabot: stock + crypto symbol union across watchlists."""
+    stocks, cryptos = [], []
+    for watchlist in cfg.get("lists", []):
+        for raw in watchlist.get("symbols", []):
+            symbol = normalize_symbol(raw)
+            if is_bybit_crypto(symbol):
+                if symbol not in cryptos:
+                    cryptos.append(symbol)
+            elif symbol and symbol not in stocks:
+                stocks.append(symbol)
+    return stocks, cryptos
+
+
+# ---- Market scanner (scanner.py) ----
+
+_scan_state: dict = {"running": False, "error": None, "started": None}
+_scan_lock = threading.Lock()
+
+
+def _scan_worker(mode: str, scope: str) -> None:
+    import tools.scanner as scanner
+
+    try:
+        scanner.run_scan(mode, scope=scope)
+        _scan_state["error"] = None
+    except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
+        _scan_state["error"] = str(exc)[:200]
+    finally:
+        _scan_state["running"] = False
+
+
+@app.route("/api/scanner")
+def api_scanner():
+    import tools.scanner as scanner
+
+    return jsonify({
+        "results": scanner.read_results(),
+        "running": _scan_state["running"],
+        "started": _scan_state["started"],
+        "error": _scan_state["error"],
+    })
+
+
+@app.route("/api/scanner/run", methods=["POST"])
+def api_scanner_run():
+    body, err = _json_object_body()
+    if err:
+        return err
+    mode = str(body.get("mode", "daily"))
+    scope = str(body.get("scope", "watchlists"))
+    if mode not in ("daily", "orb") or scope not in ("watchlists", "universe"):
+        return jsonify({"error": "mode must be daily|orb and scope watchlists|universe"}), 400
+    with _scan_lock:
+        if _scan_state["running"]:
+            return jsonify({"error": "a scan is already running"}), 409
+        _scan_state.update(running=True, error=None,
+                           started=datetime.now(NY).isoformat(timespec="seconds"))
+    threading.Thread(target=_scan_worker, args=(mode, scope), daemon=True).start()
+    return jsonify({"started": True, "mode": mode, "scope": scope}), 202
+
+
+# ---- Day skill tab (opening-range path; does not change paperbot runs) ----
+_skill_lock = threading.Lock()
+_skill_state = {"running": False, "error": None, "board": None, "account_error": None}
+
+
+def _skill_worker() -> None:
+    import tools.skill_board as skill_board
+    from paper.broker import Broker, BrokerError
+
+    account = None
+    account_error = None
+    broker = None
+    try:
+        broker = Broker.from_env()
+        account = broker.account()
+    except BrokerError as exc:
+        account_error = str(exc)
+    except Exception as exc:  # noqa: BLE001 - a down broker still leaves the board readable
+        account_error = str(exc)[:200]
+    try:
+        board = skill_board.build_board(account=account)
+        with _skill_lock:
+            _skill_state.update(board=board, error=None, account_error=account_error)
+        if broker is not None:
+            skill_board.send_passes(broker, board=board)
+    except Exception as exc:  # noqa: BLE001
+        with _skill_lock:
+            _skill_state["error"] = str(exc)[:200]
+    finally:
+        with _skill_lock:
+            _skill_state["running"] = False
+
+
+def _skill_flat_loop() -> None:
+    import time
+
+    import market.market_calendar as market_calendar
+    import tools.skill_board as skill_board
+    from paper.broker import Broker, BrokerError
+
+    wakes = 0
+    while True:
+        time.sleep(30)
+        wakes += 1
+        try:
+            skill_board.flatten_due(Broker.from_env())
+        except BrokerError:
+            pass
+        except Exception:
+            import logging
+            logging.getLogger("dashboard").exception("skill flat-by failed")
+        if wakes % 10 != 1:
+            continue
+        now = datetime.now(NY)
+        if not market_calendar.is_open(now):
+            continue
+        with _skill_lock:
+            if _skill_state["running"]:
+                continue
+            _skill_state["running"] = True
+        _skill_worker()
+
+
+@app.route("/api/skill")
+def api_skill():
+    with _skill_lock:
+        return jsonify(dict(_skill_state))
+
+
+@app.route("/api/skill/run", methods=["POST"])
+def api_skill_run():
+    with _skill_lock:
+        if _skill_state["running"]:
+            return jsonify({"error": "the skill board is already checking"}), 409
+        _skill_state.update(running=True, error=None)
+    threading.Thread(target=_skill_worker, daemon=True).start()
+    return jsonify({"started": True}), 202
+
+
 if __name__ == "__main__":
+    threading.Thread(target=_skill_flat_loop, daemon=True).start()
     app.run(host="127.0.0.1", port=8000, debug=False)

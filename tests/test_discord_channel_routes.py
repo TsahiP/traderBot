@@ -1,5 +1,5 @@
 """Discord channel name → route parsing."""
-import discord_channel_routes as dcr
+import integrations.discord_channel_routes as dcr
 
 
 def test_prefixed_stock_and_crypto_timeframes():

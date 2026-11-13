@@ -14,12 +14,16 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from dotenv import load_dotenv
 
-import config
-import signals
-from candle_patterns import PATTERNS, detect_all
-from chart_image import render_candles
-from market_data import fetch_ohlcv, fetch_ohlcv_period
-from market_symbols import is_bybit_crypto, normalize_symbol
+import core.config as config
+import market.market_calendar as market_calendar
+import signaling.signal_outcomes as signal_outcomes
+import signaling.signals as signals
+import tools.timemachine as timemachine
+from charts.candle_patterns import PATTERNS, detect_all
+from charts.chart_image import render_candles
+from charts.confirmations import below_min, evaluate, failed_required, format_lines
+from market.market_data import fetch_ohlcv, fetch_ohlcv_period
+from market.market_symbols import is_bybit_crypto, normalize_symbol
 
 load_dotenv(config.BASE_DIR / ".env")
 
@@ -39,7 +43,7 @@ TF_PERIOD = {
     "15m": "30d",
     "30m": "60d",
     "1h": "90d",
-    "1d": "180d",
+    "1d": "2y",
     "1w": "5y",
 }
 _TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
@@ -49,7 +53,7 @@ _BYBIT_LOOKBACK = {
     "15m": timedelta(days=30),
     "30m": timedelta(days=60),
     "1h": timedelta(days=90),
-    "1d": timedelta(days=180),
+    "1d": timedelta(days=730),
     "1w": timedelta(days=365 * 5),
 }
 
@@ -102,7 +106,14 @@ def build_levels(df: pd.DataFrame, pattern_id: str) -> dict:
     return {"entry": close, "stop": round(stop, 4), "target": (round(target, 4) if target is not None else None)}
 
 
-def build_message(symbol: str, timeframe: str, pattern_id: str, bar_ts: str, levels: dict) -> str:
+def build_message(
+    symbol: str,
+    timeframe: str,
+    pattern_id: str,
+    bar_ts: str,
+    levels: dict,
+    confluence_lines: list[str] | None = None,
+) -> str:
     meta = PATTERNS[pattern_id]
     side = "LONG" if meta["direction"] == "long" else "SHORT"
     lines = [
@@ -113,6 +124,8 @@ def build_message(symbol: str, timeframe: str, pattern_id: str, bar_ts: str, lev
     ]
     if levels["target"] is not None:
         lines.append(f"Target: ${levels['target']:.2f} (R:R 1:2)")
+    if confluence_lines:
+        lines.extend(confluence_lines)
     return "\n".join(lines)
 
 
@@ -185,6 +198,74 @@ def _try_deliver_alert(
     return tg_ok and dc_ok
 
 
+def _log_signal(
+    key: str,
+    list_name: str,
+    symbol: str,
+    timeframe: str,
+    pattern_id: str,
+    bar_ts: str,
+    levels: dict,
+    *,
+    confluence: dict | None,
+    filtered: bool,
+    timemachine: dict | None = None,
+) -> None:
+    entry = {
+        "key": key,
+        "ts": datetime.now(NY).isoformat(timespec="seconds"),
+        "list": list_name,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "pattern_id": pattern_id,
+        "label": PATTERNS[pattern_id]["label"],
+        "direction": PATTERNS[pattern_id]["direction"],
+        "close": levels["entry"],
+        "entry": levels["entry"],
+        "stop": levels["stop"],
+        "target": levels["target"],
+        "bar_ts": bar_ts,
+        "filtered": filtered,
+    }
+    if confluence is not None:
+        entry["confluence"] = confluence
+    if timemachine:
+        entry["timemachine"] = {k: timemachine[k] for k in
+                                ("runs", "sessions", "p_target", "p_stop", "p_neither", "avg_r", "verdict")}
+    signals.append_signal(entry)
+
+
+def time_machine_for_alert(
+    symbol: str,
+    timeframe: str,
+    df: pd.DataFrame,
+    pattern_id: str,
+    levels: dict,
+    bars_cache: dict,
+) -> dict | None:
+    """Replay the rest of today's session for an intraday stock alert (None when
+    off, crypto, daily+, no target, or not enough 5m history)."""
+    if (config.TIMEMACHINE_ALERT_RUNS <= 0 or timeframe not in config.TIMEMACHINE_ALERT_TFS
+            or is_bybit_crypto(normalize_symbol(symbol)) or levels.get("target") is None):
+        return None
+    pair = (symbol, "5m:60d")
+    if pair not in bars_cache:
+        try:
+            bars_cache[pair] = fetch_ohlcv_period(symbol, "5m", "60d")
+        except Exception as exc:
+            logger.warning("time machine bars %s failed: %s", symbol, exc)
+            bars_cache[pair] = pd.DataFrame()
+    at = (df.index[-1] + timedelta(minutes=_TF_MINUTES[timeframe])).to_pydatetime()
+    try:
+        return timemachine.replay(
+            bars_cache[pair], entry=levels["entry"], stop=levels["stop"], target=levels["target"],
+            at=at, side=PATTERNS[pattern_id]["direction"], runs=config.TIMEMACHINE_ALERT_RUNS,
+        )
+    except timemachine.TimeMachineError as exc:
+        logger.info("time machine skipped for %s %s: %s", symbol, timeframe, exc)
+        return None
+
+
 def _watchlist_by_id(cfg: dict, list_id: str) -> dict | None:
     for watchlist in cfg.get("lists", []):
         if watchlist["id"] == list_id:
@@ -245,8 +326,37 @@ def _run_scan_job(
             continue
 
         levels = build_levels(df, pattern_id)
-        message = build_message(symbol, timeframe, pattern_id, bar_ts, levels)
+        analysis = watchlist.get("analysis") or {}
+        confluence = None
+        confluence_lines = None
+        if analysis.get("enabled"):
+            confluence = evaluate(df, PATTERNS[pattern_id]["direction"], PATTERNS[pattern_id]["bars"])
+            confluence_lines = format_lines(confluence, details=bool(analysis.get("show_details", True)))
+            min_score = int(analysis.get("min_score", 3))
+            missed = failed_required(confluence, analysis.get("checks"))
+            score_blocked = bool(analysis.get("block")) and below_min(confluence, min_score)
+            if score_blocked or missed:
+                _log_signal(
+                    key, list_name, symbol, timeframe, pattern_id, bar_ts, levels,
+                    confluence=confluence, filtered=True,
+                )
+                sent.add(key)
+                logger.info(
+                    "filtered %s score %s/%s (min %s, required %s)",
+                    key, confluence["score"], confluence["total"], min_score,
+                    ",".join(missed) or "-",
+                )
+                continue
+
+        tm = time_machine_for_alert(symbol, timeframe, df, pattern_id, levels, bars_cache)
+        extra_lines = list(confluence_lines or [])
+        if tm:
+            extra_lines.append(timemachine.format_line(tm))
+        message = build_message(
+            symbol, timeframe, pattern_id, bar_ts, levels, extra_lines or None,
+        )
         try:
+            smc = (analysis.get("smc") or {}) if analysis.get("enabled") else {}
             photo = render_candles(
                 df,
                 symbol,
@@ -254,6 +364,7 @@ def _run_scan_job(
                 PATTERNS[pattern_id]["label"],
                 PATTERNS[pattern_id]["direction"],
                 levels=levels,
+                smc_flags=smc,
             )
         except Exception as exc:
             logger.warning("chart render failed for %s: %s", key, exc)
@@ -265,24 +376,36 @@ def _run_scan_job(
             logger.warning("delivery failed or blocked for %s — will retry next cycle", key)
             continue
 
-        entry = {
-            "key": key,
-            "ts": datetime.now(NY).isoformat(timespec="seconds"),
-            "list": list_name,
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "pattern_id": pattern_id,
-            "label": PATTERNS[pattern_id]["label"],
-            "direction": PATTERNS[pattern_id]["direction"],
-            "close": levels["entry"],
-            "entry": levels["entry"],
-            "stop": levels["stop"],
-            "target": levels["target"],
-            "bar_ts": bar_ts,
-        }
-        signals.append_signal(entry)
+        _log_signal(
+            key, list_name, symbol, timeframe, pattern_id, bar_ts, levels,
+            confluence=confluence, filtered=False, timemachine=tm,
+        )
         sent.add(key)
         logger.info("SIGNAL %s (list: %s)", key, list_name)
+
+
+def _list_id_from_key(key: str) -> str | None:
+    parts = str(key).split("|")
+    return parts[0] if len(parts) == 5 else None  # legacy keys have no list id
+
+
+def send_outcome_followups(cfg: dict, token: str | None, chat_ids: list[str]) -> int:
+    """Post 'target hit' / 'stop hit' for alerts resolved this wake, on the
+    same channels as the alert. Failed sends retry on the next wake."""
+    done: set[str] = set()
+    for entry in signal_outcomes.pending_notifications():
+        key = entry.get("key", "")
+        watchlist = _watchlist_by_id(cfg, _list_id_from_key(key) or "")
+        if watchlist is None:  # list deleted: nothing to route to, stop retrying
+            done.add(key)
+            continue
+        message = signal_outcomes.outcome_message(entry)
+        if _try_deliver_alert(watchlist, entry.get("timeframe", ""), key + "|outcome",
+                              message, None, token, chat_ids, entry.get("symbol", "")):
+            done.add(key)
+            logger.info("OUTCOME %s %s", entry.get("outcome"), key)
+    signal_outcomes.mark_notified(done)
+    return len(done)
 
 
 def main() -> None:
@@ -307,17 +430,36 @@ def main() -> None:
         due: list[tuple[str, str, str, str]] = []
         for list_id, list_name, symbol, timeframe in jobs:
             job_key = (list_id, symbol, timeframe)
-            if job_key not in schedule:
+            first_run = job_key not in schedule
+            if first_run:
                 schedule[job_key] = now
-            if now >= schedule[job_key]:
-                due.append((list_id, list_name, symbol, timeframe))
+            if now < schedule[job_key]:
+                continue
+            if not first_run and not is_bybit_crypto(normalize_symbol(symbol)) and not \
+                    market_calendar.stock_bar_due(timeframe, now, _TF_MINUTES.get(timeframe)):
+                # NYSE closed for this bar (weekend, holiday, overnight): skip the fetch
+                schedule[job_key] = signals.next_run_after_timeframe(timeframe, now)
+                continue
+            due.append((list_id, list_name, symbol, timeframe))
 
         bars_cache: dict[tuple[str, str], pd.DataFrame] = {}
         for list_id, list_name, symbol, timeframe in due:
-            _run_scan_job(
-                cfg, list_id, list_name, symbol, timeframe, sent, token, chat_ids, bars_cache
-            )
+            try:
+                _run_scan_job(
+                    cfg, list_id, list_name, symbol, timeframe, sent, token, chat_ids, bars_cache
+                )
+            except Exception:  # noqa: BLE001 - one job (or a locked log file) must not kill the bot
+                logger.exception("scan job %s %s [%s] failed", symbol, timeframe, list_name)
             schedule[(list_id, symbol, timeframe)] = signals.next_run_after_timeframe(timeframe, now)
+
+        try:
+            signal_outcomes.update_pending(bars_cache)
+        except Exception:  # noqa: BLE001
+            logger.exception("outcome update failed (retried next wake)")
+        try:
+            send_outcome_followups(cfg, token, chat_ids)
+        except Exception as exc:
+            logger.warning("outcome follow-ups failed: %s", exc)
 
         elapsed = time.time() - wake_start
         tg_ok = bool(token and chat_ids)

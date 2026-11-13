@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-import config
-import signals
+import core.config as config
+import signaling.signals as signals
 
 
 @pytest.fixture(autouse=True)
@@ -192,6 +192,16 @@ def test_dc_send_text(monkeypatch):
 
     monkeypatch.setattr("requests.post", fake_post)
     assert signals.dc_send("https://example.com/hook", text="hello")
+
+
+def test_dc_send_suppress_embeds_sets_flag(monkeypatch):
+    class Resp:
+        ok = True
+
+    seen = {}
+    monkeypatch.setattr("requests.post", lambda url, **kw: seen.update(kw) or Resp())
+    assert signals.dc_send("https://example.com/hook", text="x", suppress_embeds=True)
+    assert seen["json"] == {"content": "x", "flags": 4}
 
 
 def test_dc_send_failure(monkeypatch):

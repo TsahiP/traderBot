@@ -24,6 +24,8 @@ const commonFields = {
   capital: z.coerce.number().min(1, "Must be positive").max(1e12, "Too large"),
   allow_short: z.boolean(),
   cost_per_share: z.coerce.number().min(0, "Min $0").max(1, "Max $1 per share"),
+  stop_atr: z.coerce.number().min(0, "Min 0 (off)").max(10, "Max 10"),
+  target_r: z.coerce.number().min(0, "Min 0 (off)").max(10, "Max 10"),
 } as const;
 
 const smaVariant = z.object({
